@@ -1,0 +1,147 @@
+<!-- c:\0124newSIm\src\templates\dashboard.html -->
+{% extends "base.html" %}
+
+{% block content %}
+<div class="dashboard-grid">
+    <!-- 経営情報サマリ -->
+    <div class="card card-large">
+        <div class="card-header">
+            <h2>自分の企業の経営情報サマリ・アラート</h2>
+        </div>
+        <div class="card-body">
+            <div class="stat-row">
+                <span class="label">現金残高</span>
+                <span class="value">¥{{ "{:,}".format(funds) }}</span>
+            </div>
+            <div class="stat-row">
+                <span class="label">従業員数</span>
+                <span class="value">{{ emp_count }}名</span>
+            </div>
+            
+            {% if alerts %}
+            <div class="alert-box">
+                {% for alert in alerts %}
+                <p class="alert-text">⚠ {{ alert }}</p>
+                {% endfor %}
+            </div>
+            {% else %}
+            <p class="text-muted">現在、重要なアラートはありません。</p>
+            {% endif %}
+            
+            <div class="card-footer">
+                <a href="{{ url_for('sales') }}" class="link-text">クリックすると、経理画面にジャンプ</a>
+            </div>
+        </div>
+    </div>
+
+    <!-- ニュースフィード -->
+    <div class="card card-large">
+        <div class="card-header">
+            <h2>世界のニュースフィード</h2>
+        </div>
+        <div class="card-body">
+            <ul class="news-list">
+                {% for item in news %}
+                <li class="news-item">
+                    <span class="news-date">Week {{ item.week }}</span>
+                    <span class="news-content">{{ item.message }}</span>
+                </li>
+                {% else %}
+                <li class="news-item">ニュースはありません。</li>
+                {% endfor %}
+            </ul>
+            <div class="card-footer">
+                <a href="{{ url_for('world') }}" class="link-text">クリックすると、ニュース画面にジャンプ</a>
+            </div>
+        </div>
+    </div>
+
+    <!-- 世界情勢サマリ -->
+    <div class="card">
+        <div class="card-header">
+            <h2>世界情勢サマリ</h2>
+        </div>
+        <div class="card-body">
+            <p>景気: 普通</p>
+            <p>業界トレンド: SUV人気</p>
+            <div class="card-footer">
+                <a href="{{ url_for('world') }}" class="link-text">世界画面へ</a>
+            </div>
+        </div>
+    </div>
+
+    <!-- 人事サマリ -->
+    <div class="card">
+        <div class="card-header">
+            <h2>自分の企業の人事サマリ</h2>
+        </div>
+        <div class="card-body">
+            <div class="stat-row">
+                <span class="label">従業員数</span>
+                <span class="value">{{ emp_count }}</span>
+            </div>
+            <div class="stat-row">
+                <span class="label">平均忠誠度</span>
+                <span class="value">50</span> <!-- 仮 -->
+            </div>
+            <div class="card-footer">
+                <a href="{{ url_for('hr') }}" class="link-text">人事画面へ</a>
+            </div>
+        </div>
+    </div>
+
+    <!-- 生産サマリ -->
+    <div class="card">
+        <div class="card-header">
+            <h2>自分の企業の生産サマリ</h2>
+        </div>
+        <div class="card-body">
+            <p>稼働中のライン: 2</p>
+            <p>今週の生産予定: 300台</p>
+            <div class="card-footer">
+                <a href="{{ url_for('production') }}" class="link-text">生産画面へ</a>
+            </div>
+        </div>
+    </div>
+
+    <!-- 労働市場サマリ -->
+    <div class="card">
+        <div class="card-header">
+            <h2>労働市場サマリ</h2>
+        </div>
+        <div class="card-body">
+            <p>失業率: 5.0%</p>
+            <p>有効求人倍率: 1.2</p>
+            <div class="card-footer">
+                <a href="{{ url_for('hr') }}" class="link-text">採用画面へ</a>
+            </div>
+        </div>
+    </div>
+    
+    <!-- B2B取引サマリ -->
+    <div class="card">
+        <div class="card-header">
+            <h2>B2B取引サマリ</h2>
+        </div>
+        <div class="card-body">
+            <p>注文数: 5件</p>
+            <div class="card-footer">
+                <a href="{{ url_for('sales') }}" class="link-text">営業画面へ</a>
+            </div>
+        </div>
+    </div>
+
+    <!-- 開発サマリ -->
+    <div class="card">
+        <div class="card-header">
+            <h2>開発サマリ</h2>
+        </div>
+        <div class="card-body">
+            <p>進行中: Model X</p>
+            <div class="card-footer">
+                <a href="{{ url_for('dev') }}" class="link-text">開発画面へ</a>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

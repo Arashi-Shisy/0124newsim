@@ -1,0 +1,260 @@
+<!-- c:\0124newSIm\src\templates\hr.html -->
+{% extends "base.html" %}
+
+{% block content %}
+<div class="sub-nav">
+    <a href="#" class="sub-nav-item active" onclick="switchTab('employees')">従業員</a>
+    <a href="#" class="sub-nav-item" onclick="switchTab('candidates')">採用候補</a>
+</div>
+
+<div class="action-bar">
+    <div class="action-buttons">
+        <!-- 選択した従業員に対するアクションボタン -->
+        <button class="btn btn-secondary" onclick="openDeptModal()">配属変更</button>
+        <button class="btn btn-secondary" onclick="openSalaryModal()">給与変更</button>
+        <button class="btn btn-danger" onclick="openFireModal()">解雇</button>
+    </div>
+</div>
+
+<!-- 従業員リスト -->
+<div id="tab-employees" class="tab-content active">
+    <div class="table-container">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th style="width: 30px;" class="no-sort"></th>
+                    <th class="sortable" onclick="sortTable(this, 1)">配属</th>
+                    <th class="sortable" onclick="sortTable(this, 2)">役職</th>
+                    <th class="sortable" onclick="sortTable(this, 3)">氏名</th>
+                    <th class="sortable" onclick="sortTable(this, 4, 'number')">給与</th>
+                    <th class="sortable" onclick="sortTable(this, 5, 'number')">忠誠度</th>
+                    <th class="sortable" onclick="sortTable(this, 6, 'number')">勤勉さ</th>
+                    <th class="sortable" onclick="sortTable(this, 7, 'number')">適応力</th>
+                    <th class="sortable" onclick="sortTable(this, 8, 'number')">生産力</th>
+                    <th class="sortable" onclick="sortTable(this, 9, 'number')">店舗</th>
+                    <th class="sortable" onclick="sortTable(this, 10, 'number')">営業</th>
+                    <th class="sortable" onclick="sortTable(this, 11, 'number')">人事</th>
+                    <th class="sortable" onclick="sortTable(this, 12, 'number')">開発</th>
+                    <th class="sortable" onclick="sortTable(this, 13, 'number')">広報</th>
+                    <th class="sortable" onclick="sortTable(this, 14, 'number')">経理</th>
+                    <th class="sortable" onclick="sortTable(this, 15, 'number')">マネジ</th>
+                    <th class="sortable" onclick="sortTable(this, 16, 'number')">業界</th>
+                    <th class="sortable" onclick="sortTable(this, 17, 'number')">役員</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for emp in employees %}
+                <tr onclick="selectRow(this, '{{ emp.id }}', '{{ emp.name }}', '{{ emp.department }}', '{{ emp.role }}', '{{ emp.salary }}')">
+                    <td><input type="radio" name="selected_emp" value="{{ emp.id }}"></td>
+                    <td>{{ emp.department }}</td>
+                    <td>{{ emp.role }}</td>
+                    <td>{{ emp.name }}</td>
+                    <td data-value="{{ emp.salary }}">¥{{ "{:,.2f}M".format(emp.salary / 1000000) }}</td>
+                    <td data-value="{{ emp.loyalty }}">
+                        <div class="bar-container">
+                            <div class="bar-fill" style="width: {{ emp.loyalty }}%; background-color: {{ '#e94560' if emp.loyalty < 40 else '#0f3460' }};"></div>
+                            <span class="bar-text">{{ emp.loyalty|int }}</span>
+                        </div>
+                    </td>
+                    <td data-value="{{ emp.diligence }}">{{ emp.diligence | ability_range(hr_power) }}</td>
+                    <td data-value="{{ emp.adaptability }}">{{ emp.adaptability | ability_range(hr_power) }}</td>
+                    <td data-value="{{ emp.production }}">{{ emp.production | ability_range(hr_power) }}</td>
+                    <td data-value="{{ emp.store_ops }}">{{ emp.store_ops | ability_range(hr_power) }}</td>
+                    <td data-value="{{ emp.sales }}">{{ emp.sales | ability_range(hr_power) }}</td>
+                    <td data-value="{{ emp.hr }}">{{ emp.hr | ability_range(hr_power) }}</td>
+                    <td data-value="{{ emp.development }}">{{ emp.development | ability_range(hr_power) }}</td>
+                    <td data-value="{{ emp.pr }}">{{ emp.pr | ability_range(hr_power) }}</td>
+                    <td data-value="{{ emp.accounting }}">{{ emp.accounting | ability_range(hr_power) }}</td>
+                    <td data-value="{{ emp.management }}">{{ emp.management | ability_range(hr_power) }}</td>
+                    <td data-value="{{ emp.industry_aptitude }}">{{ emp.industry_aptitude|round(1) }}</td>
+                    <td data-value="{{ emp.executive }}">{{ emp.executive | ability_range(hr_power) }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- 採用候補リスト -->
+<div id="tab-candidates" class="tab-content">
+    <div class="table-container">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th class="sortable" onclick="sortTable(this, 0)">氏名</th>
+                    <th class="sortable" onclick="sortTable(this, 1, 'number')">希望給与</th>
+                    <th class="sortable" onclick="sortTable(this, 2, 'number')">勤勉さ</th>
+                    <th class="sortable" onclick="sortTable(this, 3, 'number')">適応力</th>
+                    <th class="sortable" onclick="sortTable(this, 4, 'number')">生産力</th>
+                    <th class="sortable" onclick="sortTable(this, 5, 'number')">店舗</th>
+                    <th class="sortable" onclick="sortTable(this, 6, 'number')">営業</th>
+                    <th class="sortable" onclick="sortTable(this, 7, 'number')">人事</th>
+                    <th class="sortable" onclick="sortTable(this, 8, 'number')">開発</th>
+                    <th class="sortable" onclick="sortTable(this, 9, 'number')">広報</th>
+                    <th class="sortable" onclick="sortTable(this, 10, 'number')">経理</th>
+                    <th class="sortable" onclick="sortTable(this, 11, 'number')">マネジ</th>
+                    <th class="no-sort">操作</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for cand in candidates %}
+                <tr>
+                    <td>{{ cand.name }}</td>
+                    <td data-value="{{ cand.desired_salary }}">¥{{ "{:,.2f}M".format(cand.desired_salary / 1000000) }}</td>
+                    <td data-value="{{ cand.diligence }}">{{ cand.diligence | ability_range(hr_power) }}</td>
+                    <td data-value="{{ cand.adaptability }}">{{ cand.adaptability | ability_range(hr_power) }}</td>
+                    <td data-value="{{ cand.production }}">{{ cand.production | ability_range(hr_power) }}</td>
+                    <td data-value="{{ cand.store_ops }}">{{ cand.store_ops | ability_range(hr_power) }}</td>
+                    <td data-value="{{ cand.sales }}">{{ cand.sales | ability_range(hr_power) }}</td>
+                    <td data-value="{{ cand.hr }}">{{ cand.hr | ability_range(hr_power) }}</td>
+                    <td data-value="{{ cand.development }}">{{ cand.development | ability_range(hr_power) }}</td>
+                    <td data-value="{{ cand.pr }}">{{ cand.pr | ability_range(hr_power) }}</td>
+                    <td data-value="{{ cand.accounting }}">{{ cand.accounting | ability_range(hr_power) }}</td>
+                    <td data-value="{{ cand.management }}">{{ cand.management | ability_range(hr_power) }}</td>
+                    <td>
+                        <form action="{{ url_for('hr_hire') }}" method="post" style="display:inline;">
+                            <input type="hidden" name="npc_id" value="{{ cand.id }}">
+                            <input type="hidden" name="offer_salary" value="{{ cand.desired_salary }}">
+                            <input type="hidden" name="target_dept" value="production"> <!-- 仮 -->
+                            <button type="submit" class="btn btn-small btn-primary">オファー</button>
+                        </form>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- 配属変更モーダル -->
+<div id="modal-dept" class="modal">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h2>配属変更</h2>
+            <span class="close" onclick="closeModal('modal-dept')">&times;</span>
+        </div>
+        <form action="{{ url_for('hr_change_dept') }}" method="post">
+            <input type="hidden" name="npc_id" id="dept-npc-id">
+            <div class="modal-body">
+                <h3 id="dept-npc-name">田中 太郎</h3>
+                <div class="form-group">
+                    <label>現在の配属</label>
+                    <div class="current-value" id="dept-current">生産部 メンバー</div>
+                </div>
+                <div class="form-group">
+                    <label>変更後の配属</label>
+                    <select name="new_dept" class="form-control">
+                        {% for dept in departments %}
+                        <option value="{{ dept }}">{{ dept }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>役職</label>
+                    <select name="new_role" class="form-control">
+                        <option value="member">メンバー</option>
+                        <option value="assistant_manager">部長補佐</option>
+                        <option value="manager">部長</option>
+                        <option value="cxo">CxO</option>
+                    </select>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="submit" class="btn btn-primary">改定</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- 給与変更モーダル -->
+<div id="modal-salary" class="modal">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h2>給与改定</h2>
+            <span class="close" onclick="closeModal('modal-salary')">&times;</span>
+        </div>
+        <form action="{{ url_for('hr_change_salary') }}" method="post">
+            <input type="hidden" name="npc_id" id="salary-npc-id">
+            <div class="modal-body">
+                <h3 id="salary-npc-name">田中 太郎</h3>
+                <div class="form-group">
+                    <label>現在の給与</label>
+                    <div class="current-value" id="salary-current">¥ 4,250,000</div>
+                </div>
+                <div class="form-group">
+                    <label>改定後の給与</label>
+                    <input type="number" name="new_salary" class="form-control input-large" placeholder="金額を入力">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="submit" class="btn btn-primary">改定</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<script>
+    let selectedNpc = null;
+
+    function switchTab(tabName) {
+        document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
+        document.getElementById('tab-' + tabName).classList.add('active');
+        
+        document.querySelectorAll('.sub-nav-item').forEach(el => el.classList.remove('active'));
+        event.target.classList.add('active');
+    }
+
+    function selectRow(row, id, name, dept, role, salary) {
+        // 選択状態の更新
+        document.querySelectorAll('tr').forEach(r => r.classList.remove('selected'));
+        row.classList.add('selected');
+        row.querySelector('input[type="radio"]').checked = true;
+
+        selectedNpc = { id, name, dept, role, salary };
+    }
+
+    function openDeptModal() {
+        if (!selectedNpc) return alert("従業員を選択してください");
+        document.getElementById('dept-npc-id').value = selectedNpc.id;
+        document.getElementById('dept-npc-name').innerText = selectedNpc.name;
+        document.getElementById('dept-current').innerText = `${selectedNpc.dept} / ${selectedNpc.role}`;
+        document.getElementById('modal-dept').style.display = 'flex';
+    }
+
+    function openSalaryModal() {
+        if (!selectedNpc) return alert("従業員を選択してください");
+        document.getElementById('salary-npc-id').value = selectedNpc.id;
+        document.getElementById('salary-npc-name').innerText = selectedNpc.name;
+        document.getElementById('salary-current').innerText = "¥ " + parseInt(selectedNpc.salary).toLocaleString();
+        document.getElementById('modal-salary').style.display = 'flex';
+    }
+    
+    function openFireModal() {
+        if (!selectedNpc) return alert("従業員を選択してください");
+        if(confirm(selectedNpc.name + " を解雇しますか？この操作は取り消せません。")) {
+            // フォームを動的に作成して送信
+            const form = document.createElement('form');
+            form.method = 'POST';
+            form.action = "{{ url_for('hr_fire') }}";
+            const input = document.createElement('input');
+            input.type = 'hidden';
+            input.name = 'npc_id';
+            input.value = selectedNpc.id;
+            form.appendChild(input);
+            document.body.appendChild(form);
+            form.submit();
+        }
+    }
+
+    function closeModal(modalId) {
+        document.getElementById(modalId).style.display = 'none';
+    }
+
+    // モーダル外クリックで閉じる
+    window.onclick = function(event) {
+        if (event.target.classList.contains('modal')) {
+            event.target.style.display = "none";
+        }
+    }
+</script>
+{% endblock %}

@@ -1,0 +1,60 @@
+<!-- c:\0124newSIm\src\templates\world.html -->
+{% extends "base.html" %}
+
+{% block content %}
+<div class="dashboard-grid">
+    <div class="card card-large">
+        <div class="card-header">
+            <h2>市場トレンド</h2>
+        </div>
+        <div class="card-body">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Week</th>
+                        <th>B2C総需要 (台)</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for t in trends %}
+                    <tr>
+                        <td>{{ t.week }}</td>
+                        <td>{{ "{:,}".format(t.b2c_demand) }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <div class="card card-large">
+        <div class="card-header">
+            <h2>企業ランキング (資金順)</h2>
+        </div>
+        <div class="card-body">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>順位</th>
+                        <th>企業名</th>
+                        <th>タイプ</th>
+                        <th>資金</th>
+                        <th>ブランド力</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for comp in ranking %}
+                    <tr>
+                        <td>{{ loop.index }}</td>
+                        <td>{{ comp.name }}</td>
+                        <td>{{ comp.type }}</td>
+                        <td>¥{{ "{:,}".format(comp.funds) }}</td>
+                        <td>{{ comp.brand_power|int }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}

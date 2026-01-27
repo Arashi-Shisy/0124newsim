@@ -1,0 +1,105 @@
+<!-- c:\0124newSIm\src\templates\base.html -->
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NewSim - {{ player.name if player else 'Game' }}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Top Bar -->
+        <header class="top-bar">
+            <div class="logo-area">
+                <h1>{{ player.name if player else '自社名' }}</h1>
+            </div>
+            <nav class="top-nav">
+                <a href="{{ url_for('dashboard') }}" class="{{ 'active' if active_page == 'dashboard' else '' }}">ダッシュボード</a>
+                <a href="{{ url_for('production') }}" class="{{ 'active' if active_page == 'production' else '' }}">生産部</a>
+                <a href="{{ url_for('store') }}" class="{{ 'active' if active_page == 'store' else '' }}">店舗</a>
+                <a href="{{ url_for('sales') }}" class="{{ 'active' if active_page == 'sales' else '' }}">営業部</a>
+                <a href="{{ url_for('hr') }}" class="{{ 'active' if active_page == 'hr' else '' }}">人事部</a>
+                <a href="{{ url_for('dev') }}" class="{{ 'active' if active_page == 'dev' else '' }}">開発部</a>
+                <a href="{{ url_for('pr') }}" class="{{ 'active' if active_page == 'pr' else '' }}">広報部</a>
+                <a href="{{ url_for('facility') }}" class="{{ 'active' if active_page == 'facility' else '' }}">施設</a>
+                <a href="{{ url_for('world') }}" class="{{ 'active' if active_page == 'world' else '' }}">世界</a>
+            </nav>
+            <div class="action-area">
+                <div class="date-display">{{ date_str }}</div>
+                <form action="{{ url_for('next_week') }}" method="post">
+                    <button type="submit" class="btn-next-week">進める</button>
+                </form>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            {% with messages = get_flashed_messages(with_categories=true) %}
+                {% if messages %}
+                    <div class="flash-messages">
+                        {% for category, message in messages %}
+                            <div class="flash-message {{ category }}">{{ message }}</div>
+                        {% endfor %}
+                    </div>
+                {% endif %}
+            {% endwith %}
+
+            {% block content %}
+            <div class="placeholder-content">
+                {{ content }}
+            </div>
+            {% endblock %}
+        </main>
+    </div>
+    
+    <script>
+        // 共通のJavaScript処理
+        document.addEventListener('DOMContentLoaded', () => {
+            // フラッシュメッセージの自動消去
+            setTimeout(() => {
+                const flashes = document.querySelectorAll('.flash-message');
+                flashes.forEach(f => f.style.opacity = '0');
+            }, 3000);
+        });
+
+        // テーブルソート機能
+        function sortTable(header, colIndex, type = 'string') {
+            const table = header.closest('table');
+            const tbody = table.querySelector('tbody');
+            const rows = Array.from(tbody.querySelectorAll('tr'));
+            const isAsc = !header.classList.contains('asc');
+            
+            // ヘッダーのクラス更新
+            table.querySelectorAll('th').forEach(th => th.classList.remove('asc', 'desc'));
+            header.classList.toggle('asc', isAsc);
+            header.classList.toggle('desc', !isAsc);
+
+            rows.sort((a, b) => {
+                const cellA = a.children[colIndex];
+                const cellB = b.children[colIndex];
+                
+                // data-value属性があればそれを優先、なければテキスト
+                let valA = cellA.getAttribute('data-value');
+                let valB = cellB.getAttribute('data-value');
+                
+                if (valA === null) valA = cellA.innerText.trim();
+                if (valB === null) valB = cellB.innerText.trim();
+
+                if (type === 'number') {
+                    // 数値変換（範囲表示 "50-54" の場合は下限値でソート）
+                    const numA = parseFloat(valA.split('-')[0].replace(/[^0-9.-]/g, '')) || 0;
+                    const numB = parseFloat(valB.split('-')[0].replace(/[^0-9.-]/g, '')) || 0;
+                    return isAsc ? numA - numB : numB - numA;
+                } else {
+                    return isAsc ? valA.localeCompare(valB, 'ja') : valB.localeCompare(valA, 'ja');
+                }
+            });
+
+            // DOM並べ替え
+            rows.forEach(row => tbody.appendChild(row));
+        }
+    </script>
+    {% block scripts %}{% endblock %}
+</body>
+</html>

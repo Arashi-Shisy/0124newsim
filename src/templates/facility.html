@@ -1,0 +1,72 @@
+<!-- c:\0124newSIm\src\templates\facility.html -->
+{% extends "base.html" %}
+
+{% block content %}
+<div class="dashboard-grid">
+    <!-- 保有施設 -->
+    <div class="card card-large">
+        <div class="card-header">
+            <h2>保有・賃貸中の施設</h2>
+        </div>
+        <div class="card-body">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>タイプ</th>
+                        <th>規模 (収容人数)</th>
+                        <th>賃料/週</th>
+                        <th>所有形態</th>
+                        <th>アクセス</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for fac in my_facilities %}
+                    <tr>
+                        <td>{{ fac.type }}</td>
+                        <td>{{ fac.size }}</td>
+                        <td>¥{{ "{:,}".format(fac.rent) }}</td>
+                        <td>{{ '自社所有' if fac.is_owned else '賃貸' }}</td>
+                        <td>{{ fac.access_score if fac.access_score else '-' }}</td>
+                    </tr>
+                    {% else %}
+                    <tr><td colspan="5">施設がありません。</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- 物件市場 -->
+    <div class="card card-large">
+        <div class="card-header">
+            <h2>物件市場</h2>
+        </div>
+        <div class="card-body">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>タイプ</th>
+                        <th>規模</th>
+                        <th>賃料/週</th>
+                        <th>アクセス</th>
+                        <th>操作</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for fac in market_facilities %}
+                    <tr>
+                        <td>{{ fac.type }}</td>
+                        <td>{{ fac.size }}</td>
+                        <td>¥{{ "{:,}".format(fac.rent) }}</td>
+                        <td>{{ fac.access_score if fac.access_score else '-' }}</td>
+                        <td>
+                            <button class="btn btn-small btn-secondary">契約 (未実装)</button>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}

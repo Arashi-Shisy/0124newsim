@@ -1,0 +1,37 @@
+<!-- c:\0124newSIm\src\templates\pr.html -->
+{% extends "base.html" %}
+
+{% block content %}
+<div class="dashboard-grid">
+    <div class="card card-large">
+        <div class="card-header">
+            <h2>広告キャンペーン</h2>
+        </div>
+        <div class="card-body">
+            <p>現在、広告機能は自動運用されています。</p>
+            <h3>商品認知度一覧</h3>
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>製品名</th>
+                        <th>認知度</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for p in products %}
+                    <tr>
+                        <td>{{ p.name }}</td>
+                        <td>
+                            <div class="bar-container">
+                                <div class="bar-fill" style="width: {{ p.awareness }}%;"></div>
+                                <span class="bar-text">{{ p.awareness|int }}</span>
+                            </div>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}

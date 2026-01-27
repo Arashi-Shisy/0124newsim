@@ -1,0 +1,76 @@
+<!-- c:\0124newSIm\src\templates\sales.html -->
+{% extends "base.html" %}
+
+{% block content %}
+<div class="dashboard-grid">
+    <!-- 受注待ちリスト -->
+    <div class="card card-large">
+        <div class="card-header">
+            <h2>B2B 受注依頼 (Pending Orders)</h2>
+        </div>
+        <div class="card-body">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>発注元</th>
+                        <th>製品</th>
+                        <th>数量</th>
+                        <th>金額</th>
+                        <th>操作</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for order in pending_orders %}
+                    <tr>
+                        <td>{{ order.buyer_name }}</td>
+                        <td>{{ order.product_name }}</td>
+                        <td>{{ order.quantity }}</td>
+                        <td>¥{{ "{:,}".format(order.amount) }}</td>
+                        <td>
+                            <form action="{{ url_for('sales_action') }}" method="post" style="display:inline;">
+                                <input type="hidden" name="order_id" value="{{ order.id }}">
+                                <button type="submit" name="action" value="accept" class="btn btn-small btn-primary">受注</button>
+                                <button type="submit" name="action" value="reject" class="btn btn-small btn-danger">拒否</button>
+                            </form>
+                        </td>
+                    </tr>
+                    {% else %}
+                    <tr><td colspan="5">現在、新しい注文はありません。</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- 取引履歴 -->
+    <div class="card card-large">
+        <div class="card-header">
+            <h2>最近の取引履歴</h2>
+        </div>
+        <div class="card-body">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Week</th>
+                        <th>取引先</th>
+                        <th>製品</th>
+                        <th>数量</th>
+                        <th>金額</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for item in history %}
+                    <tr>
+                        <td>{{ item.week }}</td>
+                        <td>{{ item.partner_name }}</td>
+                        <td>{{ item.product_name }}</td>
+                        <td>{{ item.quantity }}</td>
+                        <td>¥{{ "{:,}".format(item.amount) }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}

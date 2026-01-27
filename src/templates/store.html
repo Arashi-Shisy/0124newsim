@@ -1,0 +1,59 @@
+<!-- c:\0124newSIm\src\templates\store.html -->
+{% extends "base.html" %}
+
+{% block content %}
+<div class="dashboard-grid">
+    <div class="card card-large">
+        <div class="card-header">
+            <h2>店舗運営状況</h2>
+        </div>
+        <div class="card-body">
+            <div class="stat-row">
+                <span class="label">店舗運営力</span>
+                <span class="value">{{ caps.store_ops|int }}</span>
+            </div>
+            <div class="stat-row">
+                <span class="label">販売処理能力 (週)</span>
+                <span class="value">{{ caps.store_throughput|int }} 台</span>
+            </div>
+            
+            <h3>店舗一覧</h3>
+            <ul class="news-list">
+                {% for store in stores %}
+                <li class="news-item">
+                    Store #{{ store.id }} (Size: {{ store.size }}, Access: {{ store.access_score }})
+                </li>
+                {% endfor %}
+            </ul>
+        </div>
+    </div>
+
+    <div class="card card-large">
+        <div class="card-header">
+            <h2>店頭在庫・価格設定</h2>
+        </div>
+        <div class="card-body">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>製品</th>
+                        <th>在庫数</th>
+                        <th>メーカー希望価格</th>
+                        <th>店頭価格</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for item in inventory %}
+                    <tr>
+                        <td>{{ item.product_name }}</td>
+                        <td>{{ item.quantity }}</td>
+                        <td>¥{{ "{:,}".format(item.msrp) }}</td>
+                        <td>¥{{ "{:,}".format(item.sales_price) }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}

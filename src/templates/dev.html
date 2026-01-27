@@ -1,0 +1,94 @@
+<!-- c:\0124newSIm\src\templates\dev.html -->
+{% extends "base.html" %}
+
+{% block content %}
+<div class="dashboard-grid">
+    <!-- 新規開発フォーム -->
+    <div class="card card-large">
+        <div class="card-header">
+            <h2>新規プロジェクト開始</h2>
+        </div>
+        <div class="card-body">
+            <form action="{{ url_for('dev_start') }}" method="post">
+                <div class="form-group">
+                    <label>プロジェクト名</label>
+                    <input type="text" name="name" class="form-control" placeholder="例: Model Y" required>
+                </div>
+                <div class="form-group">
+                    <label>開発方針</label>
+                    <select name="strategy" class="form-control">
+                        {% for key, strat in strategies.items() %}
+                        <option value="{{ key }}">{{ strat.name }} (魅力: x{{ strat.c_mod }}, 効率: x{{ strat.e_mod }})</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                
+                <h3>パーツ選定</h3>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+                    {% for part in parts_data %}
+                    <div class="form-group">
+                        <label>{{ part.label }} (基準: ¥{{ "{:,}".format(part.base_cost) }})</label>
+                        <select name="part_{{ part.key }}" class="form-control">
+                            {% for sup in suppliers[part.key] %}
+                            <option value="{{ sup.id }}">
+                                {{ sup.name }} [品質:{{ sup.trait_material_score }} / コスト:x{{ sup.trait_cost_multiplier }}]
+                            </option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    {% endfor %}
+                </div>
+                
+                <div class="card-footer">
+                    <button type="submit" class="btn btn-primary">開発開始 (期間: {{ duration }}週)</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- 開発状況 -->
+    <div class="card card-large">
+        <div class="card-header">
+            <h2>プロジェクト状況</h2>
+        </div>
+        <div class="card-body">
+            <h3>進行中</h3>
+            <ul class="news-list">
+                {% for proj in developing %}
+                <li class="news-item">
+                    <span class="news-content">
+                        <strong>{{ proj.name }}</strong> - 残り {{ duration - (current_week - proj.developed_week) }} 週
+                    </span>
+                </li>
+                {% else %}
+                <li class="news-item">進行中のプロジェクトはありません。</li>
+                {% endfor %}
+            </ul>
+
+            <h3 style="margin-top: 20px;">完了済み製品</h3>
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>製品名</th>
+                        <th>コンセプト</th>
+                        <th>生産効率</th>
+                        <th>販売価格</th>
+                        <th>認知度</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for prod in completed %}
+                    <tr>
+                        <td>{{ prod.name }}</td>
+                        <td>{{ "{:.2f}".format(prod.concept_score) }}</td>
+                        <td>{{ "{:.2f}".format(prod.production_efficiency) }}</td>
+                        <td>¥{{ "{:,}".format(prod.sales_price) }}</td>
+                        <td>{{ "{:.1f}".format(prod.awareness) }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}

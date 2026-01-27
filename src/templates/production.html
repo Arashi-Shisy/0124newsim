@@ -1,0 +1,77 @@
+<!-- c:\0124newSIm\src\templates\production.html -->
+{% extends "base.html" %}
+
+{% block content %}
+<div class="dashboard-grid">
+    <!-- 生産能力サマリ -->
+    <div class="card card-large">
+        <div class="card-header">
+            <h2>生産能力・キャパシティ</h2>
+        </div>
+        <div class="card-body">
+            <div class="stat-row">
+                <span class="label">今週の生産可能数</span>
+                <span class="value">{{ remaining_capacity }} / {{ max_capacity }} 台</span>
+            </div>
+            <div class="bar-container" style="width: 100%; height: 24px; margin-top: 10px;">
+                <div class="bar-fill" style="width: {{ (current_produced / max_capacity * 100)|int if max_capacity > 0 else 0 }}%;"></div>
+                <span class="bar-text" style="right: auto; left: 10px;">稼働率 {{ (current_produced / max_capacity * 100)|int if max_capacity > 0 else 0 }}%</span>
+            </div>
+            <div class="stat-row" style="margin-top: 15px;">
+                <span class="label">生産部 能力値</span>
+                <span class="value">{{ caps.production|int }}</span>
+            </div>
+            <div class="stat-row">
+                <span class="label">生産効率係数</span>
+                <span class="value">x {{ "{:.2f}".format((caps.production / 50.0)) }}</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- 生産指示 -->
+    <div class="card card-large">
+        <div class="card-header">
+            <h2>生産指示</h2>
+        </div>
+        <div class="card-body">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>製品名</th>
+                        <th>在庫</th>
+                        <th>効率</th>
+                        <th>コスト/台</th>
+                        <th>生産数</th>
+                        <th>操作</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for design in designs %}
+                    <tr>
+                        <td>{{ design.name }}</td>
+                        <td>{{ inv_map.get(design.id, 0) }}</td>
+                        <td>{{ design.production_efficiency }}</td>
+                        <td>
+                            {% set parts = design.parts_config|tojson|safe %}
+                            <!-- 簡易表示のためコスト計算はサーバーサイド推奨だがここでは概算 -->
+                            ¥ --
+                        </td>
+                        <form action="{{ url_for('production_order') }}" method="post">
+                            <input type="hidden" name="design_id" value="{{ design.id }}">
+                            <td>
+                                <input type="number" name="quantity" class="form-control" style="width: 80px;" min="0" max="{{ remaining_capacity }}">
+                            </td>
+                            <td>
+                                <button type="submit" class="btn btn-small btn-primary" {{ 'disabled' if remaining_capacity <= 0 else '' }}>生産</button>
+                            </td>
+                        </form>
+                    </tr>
+                    {% else %}
+                    <tr><td colspan="6">生産可能な製品がありません。開発部で製品を開発してください。</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}
