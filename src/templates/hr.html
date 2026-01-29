@@ -125,8 +125,8 @@
                             <span class="bar-text">{{ emp.loyalty|int }}</span>
                         </div>
                     </td>
-                    <td data-value="{{ emp.management | perceived_value(hr_power) }}">{{ emp.management | ability_range(hr_power) }}</td>
-                    <td data-value="{{ emp.executive | perceived_value(hr_power) }}">{{ emp.executive | ability_range(hr_power) }}</td>
+                    <td data-value="{{ emp.management | perceived_value(hr_power) }}">{{ emp.management | ability_range_colored(hr_power) }}</td>
+                    <td data-value="{{ emp.executive | perceived_value(hr_power) }}">{{ emp.executive | ability_range_colored(hr_power) }}</td>
                 </tr>
                 {% else %}
                 <tr><td colspan="9">役員はいません。</td></tr>
@@ -177,18 +177,18 @@
                             <span class="bar-text">{{ emp.loyalty|int }}</span>
                         </div>
                     </td>
-                    <td data-value="{{ emp.diligence | perceived_value(hr_power) }}">{{ emp.diligence | ability_range(hr_power) }}</td>
-                    <td data-value="{{ emp.adaptability | perceived_value(hr_power) }}">{{ emp.adaptability | ability_range(hr_power) }}</td>
-                    <td data-value="{{ emp.production | perceived_value(hr_power) }}">{{ emp.production | ability_range(hr_power) }}</td>
-                    <td data-value="{{ emp.store_ops | perceived_value(hr_power) }}">{{ emp.store_ops | ability_range(hr_power) }}</td>
-                    <td data-value="{{ emp.sales | perceived_value(hr_power) }}">{{ emp.sales | ability_range(hr_power) }}</td>
-                    <td data-value="{{ emp.hr | perceived_value(hr_power) }}">{{ emp.hr | ability_range(hr_power) }}</td>
-                    <td data-value="{{ emp.development | perceived_value(hr_power) }}">{{ emp.development | ability_range(hr_power) }}</td>
-                    <td data-value="{{ emp.pr | perceived_value(hr_power) }}">{{ emp.pr | ability_range(hr_power) }}</td>
-                    <td data-value="{{ emp.accounting | perceived_value(hr_power) }}">{{ emp.accounting | ability_range(hr_power) }}</td>
-                    <td data-value="{{ emp.management | perceived_value(hr_power) }}">{{ emp.management | ability_range(hr_power) }}</td>
+                    <td data-value="{{ emp.diligence | perceived_value(hr_power) }}">{{ emp.diligence | ability_range_colored(hr_power) }}</td>
+                    <td data-value="{{ emp.adaptability | perceived_value(hr_power) }}">{{ emp.adaptability | ability_range_colored(hr_power) }}</td>
+                    <td data-value="{{ emp.production | perceived_value(hr_power) }}">{{ emp.production | ability_range_colored(hr_power) }}</td>
+                    <td data-value="{{ emp.store_ops | perceived_value(hr_power) }}">{{ emp.store_ops | ability_range_colored(hr_power) }}</td>
+                    <td data-value="{{ emp.sales | perceived_value(hr_power) }}">{{ emp.sales | ability_range_colored(hr_power) }}</td>
+                    <td data-value="{{ emp.hr | perceived_value(hr_power) }}">{{ emp.hr | ability_range_colored(hr_power) }}</td>
+                    <td data-value="{{ emp.development | perceived_value(hr_power) }}">{{ emp.development | ability_range_colored(hr_power) }}</td>
+                    <td data-value="{{ emp.pr | perceived_value(hr_power) }}">{{ emp.pr | ability_range_colored(hr_power) }}</td>
+                    <td data-value="{{ emp.accounting | perceived_value(hr_power) }}">{{ emp.accounting | ability_range_colored(hr_power) }}</td>
+                    <td data-value="{{ emp.management | perceived_value(hr_power) }}">{{ emp.management | ability_range_colored(hr_power) }}</td>
                     <td data-value="{{ emp.industry_aptitude }}">{{ emp.industry_aptitude|round(1) }}</td>
-                    <td data-value="{{ emp.executive | perceived_value(hr_power) }}">{{ emp.executive | ability_range(hr_power) }}</td>
+                    <td data-value="{{ emp.executive | perceived_value(hr_power) }}">{{ emp.executive | ability_range_colored(hr_power) }}</td>
                 </tr>
                 {% endfor %}
             </tbody>
@@ -253,16 +253,16 @@
                     <td>{{ cand.name }}</td>
                     <td>{{ cand.age }}</td>
                     <td data-value="{{ cand.desired_salary }}">¥{{ "{:,.2f}M".format(cand.desired_salary / 1000000) }}</td>
-                    <td data-value="{{ cand.diligence | perceived_value(hr_power) }}">{{ cand.diligence | ability_range(hr_power) }}</td>
-                    <td data-value="{{ cand.adaptability | perceived_value(hr_power) }}">{{ cand.adaptability | ability_range(hr_power) }}</td>
-                    <td data-value="{{ cand.production | perceived_value(hr_power) }}">{{ cand.production | ability_range(hr_power) }}</td>
-                    <td data-value="{{ cand.store_ops | perceived_value(hr_power) }}">{{ cand.store_ops | ability_range(hr_power) }}</td>
-                    <td data-value="{{ cand.sales | perceived_value(hr_power) }}">{{ cand.sales | ability_range(hr_power) }}</td>
-                    <td data-value="{{ cand.hr | perceived_value(hr_power) }}">{{ cand.hr | ability_range(hr_power) }}</td>
-                    <td data-value="{{ cand.development | perceived_value(hr_power) }}">{{ cand.development | ability_range(hr_power) }}</td>
-                    <td data-value="{{ cand.pr | perceived_value(hr_power) }}">{{ cand.pr | ability_range(hr_power) }}</td>
-                    <td data-value="{{ cand.accounting | perceived_value(hr_power) }}">{{ cand.accounting | ability_range(hr_power) }}</td>
-                    <td data-value="{{ cand.management | perceived_value(hr_power) }}">{{ cand.management | ability_range(hr_power) }}</td>
+                    <td data-value="{{ cand.diligence | perceived_value(hr_power) }}">{{ cand.diligence | ability_range_colored(hr_power) }}</td>
+                    <td data-value="{{ cand.adaptability | perceived_value(hr_power) }}">{{ cand.adaptability | ability_range_colored(hr_power) }}</td>
+                    <td data-value="{{ cand.production | perceived_value(hr_power) }}">{{ cand.production | ability_range_colored(hr_power) }}</td>
+                    <td data-value="{{ cand.store_ops | perceived_value(hr_power) }}">{{ cand.store_ops | ability_range_colored(hr_power) }}</td>
+                    <td data-value="{{ cand.sales | perceived_value(hr_power) }}">{{ cand.sales | ability_range_colored(hr_power) }}</td>
+                    <td data-value="{{ cand.hr | perceived_value(hr_power) }}">{{ cand.hr | ability_range_colored(hr_power) }}</td>
+                    <td data-value="{{ cand.development | perceived_value(hr_power) }}">{{ cand.development | ability_range_colored(hr_power) }}</td>
+                    <td data-value="{{ cand.pr | perceived_value(hr_power) }}">{{ cand.pr | ability_range_colored(hr_power) }}</td>
+                    <td data-value="{{ cand.accounting | perceived_value(hr_power) }}">{{ cand.accounting | ability_range_colored(hr_power) }}</td>
+                    <td data-value="{{ cand.management | perceived_value(hr_power) }}">{{ cand.management | ability_range_colored(hr_power) }}</td>
                     <td>
                         {% if cand.id in offered_npc_ids %}
                             <button class="btn btn-small btn-secondary" disabled style="opacity: 0.6; cursor: not-allowed;">オファー済</button>
@@ -359,8 +359,23 @@
         document.getElementById('tab-' + tabName).classList.add('active');
         
         document.querySelectorAll('.sub-nav-item').forEach(el => el.classList.remove('active'));
-        event.target.classList.add('active');
+        
+        // ナビゲーション項目のアクティブ化
+        const navItems = document.querySelectorAll('.sub-nav-item');
+        navItems.forEach(item => {
+            if (item.getAttribute('onclick').includes("'" + tabName + "'")) {
+                item.classList.add('active');
+            }
+        });
     }
+
+    document.addEventListener('DOMContentLoaded', () => {
+        const urlParams = new URLSearchParams(window.location.search);
+        const tab = urlParams.get('tab');
+        if (tab) {
+            switchTab(tab);
+        }
+    });
 
     function selectRow(row, id, name, dept, role, salary) {
         // 選択状態の更新

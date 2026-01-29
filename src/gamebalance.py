@@ -9,7 +9,7 @@ RETIREMENT_AGE = 66
 LIFESPAN_WEEKS = (RETIREMENT_AGE - START_AGE) * WEEKS_PER_AGE
 
 # 経済・市場関連
-BASE_MARKET_DEMAND = 1000  # 自動車業界の週次基礎需要（台）
+BASE_MARKET_DEMAND = 800  # 自動車業界の週次基礎需要（台） - 供給過多にするため引き下げ
 ECONOMIC_INDEX_MIN = 0.8
 ECONOMIC_INDEX_MAX = 1.2
 RANDOM_FLUCTUATION = 0.05
@@ -46,7 +46,7 @@ FACILITY_UNIT_SIZE = 5 # 施設を借りる際の最小単位（人）
 FACILITY_PURCHASE_MULTIPLIER = 100 # 購入価格は週次賃料の100倍
 
 # 生産・業務効率
-BASE_PRODUCTION_EFFICIENCY = 0.3 # 台/NPC/週
+BASE_PRODUCTION_EFFICIENCY = 0.2 # 台/NPC/週
 BASE_SALES_EFFICIENCY = 0.7 # 台/NPC/週 (店舗販売)
 HR_CAPACITY_PER_PERSON = 6 # 人事1人で管理できる人数
 
@@ -120,9 +120,11 @@ CREDIT_LIMIT_MULTIPLIER = 10000000 # 格付け1あたり1000万円の枠
 # 広告
 AD_COST_UNIT = 1000000 # 1単位100万円
 AD_EFFECT_BASE = 1.0 # 1単位あたりの上昇ベース値
-BRAND_DECAY = 0.98 # ブランド力の週次減衰率 (2%減)
-AWARENESS_DECAY = 0.95 # 商品認知度の週次減衰率 (5%減)
+BRAND_DECAY_BASE = 0.90 # ブランド力の基本減衰率 (広報0の場合、毎週10%減)
+AWARENESS_DECAY_BASE = 0.85 # 商品認知度の基本減衰率 (広報0の場合、毎週15%減)
+PR_MITIGATION_FACTOR = 0.001 # 広報力1につき減衰率を0.1%緩和
 
 # 価格戦略
 PRICE_ADJUST_RATE = 0.05 # 価格改定幅 (5%)
 MIN_PROFIT_MARGIN = 1.1 # 最低利益率 (原価の1.1倍)
+

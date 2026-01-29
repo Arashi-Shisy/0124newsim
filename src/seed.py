@@ -119,7 +119,7 @@ def run_seed():
     demand = gb.BASE_MARKET_DEMAND
     
     # 企業数: 需要200台につきメーカー1社、100台につき小売1社 (最低数は確保)
-    num_npc_makers = 5
+    num_npc_makers = 8 # 競合を増やして難易度アップ
     num_npc_retailers = 3
     
     # 2. 企業作成
@@ -189,7 +189,7 @@ def run_seed():
         if c_type == 'maker':
             # 生産能力: 需要の1.2倍確保
             # 1人あたり生産効率: gb.BASE_PRODUCTION_EFFICIENCY
-            needed_prod = share / gb.BASE_PRODUCTION_EFFICIENCY
+            needed_prod = (share * 1.5) / gb.BASE_PRODUCTION_EFFICIENCY # 初期供給能力を強化 (1.5倍)
             staff_req[gb.DEPT_PRODUCTION] = max(1, int(needed_prod * 1.2 / gb.NPC_SCALE_FACTOR))
             
             # 他部署は生産人員に対する比率で設定
@@ -257,7 +257,7 @@ def run_seed():
 
     # 失業者生成 (全体失業率5% -> 雇用者数 / 0.95 = 全体数)
     employed_count = len(npc_data_list)
-    total_population = int(employed_count / 0.95)
+    total_population = int(employed_count / 0.7)
     unemployed_count = total_population - employed_count
     
     print(f"Employed: {employed_count}, Unemployed: {unemployed_count}, Total: {total_population}")
@@ -273,10 +273,14 @@ def run_seed():
     if npc_data_list:
         placeholders = ','.join(['?'] * len(columns))
         col_str = ','.join(columns)
-        conn = db.get_connection()
-        conn.executemany(f"INSERT INTO npcs ({col_str}) VALUES ({placeholders})", npc_data_list)
-        conn.commit()
-        conn.close()
+        conn, should_close = db.get_connection()
+        try:
+            conn.executemany(f"INSERT INTO npcs ({col_str}) VALUES ({placeholders})", npc_data_list)
+            if should_close:
+                conn.commit()
+        finally:
+            if should_close:
+                conn.close()
 
     # 4. 初期商品設計書 (各NPCメーカー)
     # 標準的なパーツ構成を作成
@@ -368,10 +372,14 @@ def run_seed():
     market_facilities = generate_facilities_data(market_factory, market_store, market_office)
     
     if market_facilities:
-        conn = db.get_connection()
-        conn.executemany("INSERT INTO facilities (type, size, rent, access_score, is_owned, name) VALUES (?, ?, ?, ?, ?, ?)", market_facilities)
-        conn.commit()
-        conn.close()
+        conn, should_close = db.get_connection()
+        try:
+            conn.executemany("INSERT INTO facilities (type, size, rent, access_score, is_owned, name) VALUES (?, ?, ?, ?, ?, ?)", market_facilities)
+            if should_close:
+                conn.commit()
+        finally:
+            if should_close:
+                conn.close()
 
     print("Seed data initialized.")
 

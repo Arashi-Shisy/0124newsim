@@ -1,0 +1,138 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="sub-nav">
+    <a href="{{ url_for('finance', period='weekly') }}" class="sub-nav-item {{ 'active' if period == 'weekly' else '' }}">週次 (Weekly)</a>
+    <a href="{{ url_for('finance', period='quarterly') }}" class="sub-nav-item {{ 'active' if period == 'quarterly' else '' }}">四半期 (Quarterly)</a>
+    <a href="{{ url_for('finance', period='yearly') }}" class="sub-nav-item {{ 'active' if period == 'yearly' else '' }}">通期 (Yearly)</a>
+</div>
+
+<div class="action-bar" style="justify-content: center; margin-bottom: 20px;">
+    <div class="pagination-controls" style="display: flex; align-items: center; gap: 20px;">
+        {% if prev_target %}
+        <a href="{{ url_for('finance', period=period, target=prev_target) }}" class="btn btn-secondary">&lt; 前へ</a>
+        {% else %}
+        <button class="btn btn-secondary" disabled style="opacity: 0.5;">&lt; 前へ</button>
+        {% endif %}
+        
+        <h2 style="margin: 0; min-width: 250px; text-align: center;">{{ label }}</h2>
+        
+        <a href="{{ url_for('finance', period=period, target=next_target) }}" class="btn btn-secondary">次へ &gt;</a>
+    </div>
+</div>
+
+<div class="dashboard-grid">
+    <!-- 損益計算書 (PL) -->
+    <div class="card card-large">
+        <div class="card-header">
+            <h2>損益計算書 (P/L)</h2>
+        </div>
+        <div class="card-body">
+            <table class="data-table" style="width: 100%;">
+                <tbody>
+                    <tr>
+                        <td>売上高 (Revenue)</td>
+                        <td style="text-align: right;">¥{{ "{:,}".format(pl.revenue|int) }}</td>
+                    </tr>
+                    <tr>
+                        <td>売上原価 (COGS)</td>
+                        <td style="text-align: right; color: #e94560;">▲ ¥{{ "{:,}".format(pl.cogs|int) }}</td>
+                    </tr>
+                    <tr style="font-weight: bold; background-color: rgba(255,255,255,0.05);">
+                        <td>売上総利益 (Gross Profit)</td>
+                        <td style="text-align: right;">¥{{ "{:,}".format(pl.gross_profit|int) }}</td>
+                    </tr>
+                    
+                    <tr><td colspan="2" style="height: 10px;"></td></tr>
+                    
+                    <tr>
+                        <td style="padding-left: 20px;">人件費</td>
+                        <td style="text-align: right; color: #e94560;">▲ ¥{{ "{:,}".format(pl.labor|int) }}</td>
+                    </tr>
+                    <tr>
+                        <td style="padding-left: 20px;">地代家賃</td>
+                        <td style="text-align: right; color: #e94560;">▲ ¥{{ "{:,}".format(pl.rent|int) }}</td>
+                    </tr>
+                    <tr>
+                        <td style="padding-left: 20px;">広告宣伝費</td>
+                        <td style="text-align: right; color: #e94560;">▲ ¥{{ "{:,}".format(pl.ad|int) }}</td>
+                    </tr>
+                    <tr style="font-weight: bold; background-color: rgba(255,255,255,0.05);">
+                        <td>営業利益 (Operating Profit)</td>
+                        <td style="text-align: right; color: {{ '#4db8ff' if pl.operating_profit >= 0 else '#e94560' }};">
+                            ¥{{ "{:,}".format(pl.operating_profit|int) }}
+                        </td>
+                    </tr>
+
+                    <tr><td colspan="2" style="height: 10px;"></td></tr>
+
+                    <tr>
+                        <td>営業外費用 (支払利息)</td>
+                        <td style="text-align: right; color: #e94560;">▲ ¥{{ "{:,}".format(pl.interest|int) }}</td>
+                    </tr>
+                    <tr style="font-weight: bold; font-size: 1.2em; border-top: 2px solid var(--border-color);">
+                        <td>当期純利益 (Net Profit)</td>
+                        <td style="text-align: right; color: {{ '#4db8ff' if pl.net_profit >= 0 else '#e94560' }};">
+                            ¥{{ "{:,}".format(pl.net_profit|int) }}
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- 貸借対照表 (BS) -->
+    <div class="card card-large">
+        <div class="card-header">
+            <h2>貸借対照表 (B/S) - 現在</h2>
+            <span style="font-size: 0.8em; color: var(--text-muted); margin-left: 10px;">※BSは常に現在の状態を表示します</span>
+        </div>
+        <div class="card-body">
+            <table class="data-table" style="width: 100%;">
+                <thead>
+                    <tr>
+                        <th colspan="2">資産の部 (Assets)</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>現金及び預金</td>
+                        <td style="text-align: right;">¥{{ "{:,}".format(bs.cash|int) }}</td>
+                    </tr>
+                    <tr>
+                        <td>棚卸資産 (在庫)</td>
+                        <td style="text-align: right;">¥{{ "{:,}".format(bs.inventory|int) }}</td>
+                    </tr>
+                    <tr>
+                        <td>固定資産 (建物等)</td>
+                        <td style="text-align: right;">¥{{ "{:,}".format(bs.fixed_assets|int) }}</td>
+                    </tr>
+                    <tr style="font-weight: bold; background-color: rgba(255,255,255,0.05);">
+                        <td>資産合計</td>
+                        <td style="text-align: right;">¥{{ "{:,}".format(bs.total_assets|int) }}</td>
+                    </tr>
+                </tbody>
+                <thead>
+                    <tr>
+                        <th colspan="2" style="padding-top: 20px;">負債・純資産の部 (Liabilities & Equity)</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>負債 (借入金)</td>
+                        <td style="text-align: right;">¥{{ "{:,}".format(bs.debt|int) }}</td>
+                    </tr>
+                    <tr style="font-weight: bold; background-color: rgba(255,255,255,0.05);">
+                        <td>純資産</td>
+                        <td style="text-align: right;">¥{{ "{:,}".format(bs.equity|int) }}</td>
+                    </tr>
+                    <tr style="font-weight: bold; border-top: 2px solid var(--border-color);">
+                        <td>負債・純資産合計</td>
+                        <td style="text-align: right;">¥{{ "{:,}".format((bs.debt + bs.equity)|int) }}</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}

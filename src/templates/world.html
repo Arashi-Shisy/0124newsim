@@ -11,14 +11,14 @@
             <table class="data-table">
                 <thead>
                     <tr>
-                        <th>Week</th>
+                        <th>時期</th>
                         <th>B2C総需要 (台)</th>
                     </tr>
                 </thead>
                 <tbody>
                     {% for t in trends %}
                     <tr>
-                        <td>{{ t.week }}</td>
+                        <td>{{ t.week | format_week }}</td>
                         <td>{{ "{:,}".format(t.b2c_demand) }}</td>
                     </tr>
                     {% endfor %}
@@ -48,7 +48,7 @@
                         <td>{{ loop.index }}</td>
                         <td>{{ comp.name }}</td>
                         <td>{{ comp.type }}</td>
-                        <td>¥{{ "{:,}".format(comp.funds) }}</td>
+                        <td>¥{{ "{:,}".format(comp.funds|int) }}</td>
                         <td>{{ comp.brand_power|int }}</td>
                     </tr>
                     {% endfor %}

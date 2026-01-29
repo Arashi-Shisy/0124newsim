@@ -4,6 +4,7 @@ import sqlite3
 import json
 import os
 from contextlib import contextmanager
+import threading
 
 # database.pyの場所を基準に絶対パスを設定
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -12,17 +13,22 @@ DB_PATH = os.path.join(BASE_DIR, "newsim.db")
 class Database:
     def __init__(self, db_path=DB_PATH):
         self.db_path = db_path
+        self._local = threading.local()
 
     def get_connection(self):
+        # トランザクション内なら既存のコネクションを返す
+        if hasattr(self._local, 'connection') and self._local.connection:
+            return self._local.connection, False  # (conn, should_close)
+        
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
-        return conn
+        return conn, True
 
     def init_db(self):
         if os.path.exists(self.db_path):
             os.remove(self.db_path)
         
-        conn = self.get_connection()
+        conn, should_close = self.get_connection()
         cursor = conn.cursor()
 
         # ゲーム状態
@@ -260,46 +266,65 @@ class Database:
         conn.close()
 
     def execute_query(self, query, params=()):
-        conn = self.get_connection()
+        conn, should_close = self.get_connection()
         try:
             cursor = conn.cursor()
             cursor.execute(query, params)
-            conn.commit()
+            if should_close:
+                conn.commit()
             return cursor.lastrowid
+        except:
+            if should_close:
+                conn.rollback()
+            raise
         finally:
-            conn.close()
+            if should_close:
+                conn.close()
 
     def fetch_one(self, query, params=()):
-        conn = self.get_connection()
+        conn, should_close = self.get_connection()
         try:
             cursor = conn.cursor()
             cursor.execute(query, params)
             result = cursor.fetchone()
             return result
         finally:
-            conn.close()
+            if should_close:
+                conn.close()
 
     def fetch_all(self, query, params=()):
-        conn = self.get_connection()
+        conn, should_close = self.get_connection()
         try:
             cursor = conn.cursor()
             cursor.execute(query, params)
             result = cursor.fetchall()
             return result
         finally:
-            conn.close()
+            if should_close:
+                conn.close()
             
     @contextmanager
     def transaction(self):
-        conn = self.get_connection()
+        # ネスト対応: 既にトランザクション中なら何もしない（親に任せる）
+        is_root = False
+        if not (hasattr(self._local, 'connection') and self._local.connection):
+            self._local.connection = sqlite3.connect(self.db_path)
+            self._local.connection.row_factory = sqlite3.Row
+            is_root = True
+            
+        conn = self._local.connection
         try:
             yield conn
-            conn.commit()
+            if is_root:
+                conn.commit()
         except Exception:
-            conn.rollback()
+            if is_root:
+                conn.rollback()
             raise
         finally:
-            conn.close()
+            if is_root:
+                conn.close()
+                self._local.connection = None
             
     def log_file_event(self, week, company_id, event_type, details):
         try:

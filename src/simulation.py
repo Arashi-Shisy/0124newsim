@@ -203,11 +203,13 @@ class Simulation:
         return caps
 
     def proceed_week(self):
+      with db.transaction():
         current_week = self.get_current_week()
         print(f"[Week {current_week}] Simulation Start")
 
         # 0. B2B注文の自動取り下げ (前週以前の未承認注文を期限切れにする)
-        db.execute_query("UPDATE b2b_orders SET status = 'expired' WHERE status = 'pending' AND week < ?", (current_week,))
+        # 発注から受注まで1週間の猶予を持たせるため、2週以上前のものを期限切れにする
+        db.execute_query("UPDATE b2b_orders SET status = 'expired' WHERE status = 'pending' AND week < ?", (current_week - 1,))
 
         # 1. NPC意思決定
         # --- パフォーマンス改善: 意思決定に必要なデータを一括で事前取得 ---
@@ -349,10 +351,10 @@ class Simulation:
         self.process_aging(current_week)
 
         # 6. 広告効果減衰
-        self.process_advertising(current_week)
+        self.process_advertising(current_week, all_caps)
 
         # 6. その他 (固定費支払い)
-        self.process_financials(current_week)
+        self.process_financials(current_week, all_caps)
         print(f"[Week {current_week}] Phase 6+: Misc Processing Finished")
 
         # 7. 銀行処理 (金利、格付け更新)
@@ -934,7 +936,7 @@ class Simulation:
                     values = tuple(new_npc.values())
                     db.execute_query(f"INSERT INTO npcs ({columns}) VALUES ({placeholders})", values)
 
-    def process_financials(self, week):
+    def process_financials(self, week, all_caps=None):
         # 施設賃料支払い
         facilities = db.fetch_all("SELECT * FROM facilities WHERE is_owned = 0")
         if facilities:
@@ -950,12 +952,31 @@ class Simulation:
                     cursor.execute("INSERT INTO account_entries (week, company_id, category, amount) VALUES (?, ?, ?, ?)",
                                    (week, fac['company_id'], cat, fac['rent']))
 
-    def process_advertising(self, week):
+    def process_advertising(self, week, all_caps=None):
         """
-        ブランド力と商品認知度の自然減衰
+        ブランド力と商品認知度の自然減衰 (広報能力依存)
         """
-        db.execute_query(f"UPDATE companies SET brand_power = brand_power * {gb.BRAND_DECAY} WHERE is_active = 1")
-        db.execute_query(f"UPDATE product_designs SET awareness = awareness * {gb.AWARENESS_DECAY}")
+        companies = db.fetch_all("SELECT id, type FROM companies WHERE is_active = 1")
+        
+        with db.transaction() as conn:
+            cursor = conn.cursor()
+            for comp in companies:
+                if comp['type'] == 'system_supplier': continue
+                
+                cid = comp['id']
+                pr_power = 0
+                if all_caps and cid in all_caps:
+                    pr_power = all_caps[cid].get('pr', 0)
+                
+                # 減衰率の計算: 基本値 + (能力による緩和)
+                # PR 0: 0.90 (10%減)
+                # PR 50: 0.90 + 0.05 = 0.95 (5%減)
+                # PR 100: 0.90 + 0.10 = 1.00 (減衰なし)
+                brand_decay = min(1.0, gb.BRAND_DECAY_BASE + (pr_power * gb.PR_MITIGATION_FACTOR))
+                awareness_decay = min(1.0, gb.AWARENESS_DECAY_BASE + (pr_power * gb.PR_MITIGATION_FACTOR))
+                
+                cursor.execute("UPDATE companies SET brand_power = brand_power * ? WHERE id = ?", (brand_decay, cid))
+                cursor.execute("UPDATE product_designs SET awareness = awareness * ? WHERE company_id = ?", (awareness_decay, cid))
 
     def process_development(self, week):
         """

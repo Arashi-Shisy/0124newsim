@@ -28,6 +28,43 @@
         </div>
     </div>
 
+    <!-- 在庫状況 -->
+    <div class="card card-large">
+        <div class="card-header">
+            <h2>現在の在庫状況</h2>
+        </div>
+        <div class="card-body">
+            <div class="stat-row">
+                <span class="label">総在庫数</span>
+                <span class="value">{{ "{:,}".format(total_inventory) }} 台</span>
+            </div>
+            <div class="stat-row">
+                <span class="label">在庫評価額 (概算)</span>
+                <span class="value">¥{{ "{:,}".format(inventory_value) }}</span>
+            </div>
+
+            <h3 style="margin-top: 15px; font-size: 1em; color: var(--text-muted);">内訳</h3>
+            <table class="data-table" style="margin-top: 5px;">
+                <thead>
+                    <tr>
+                        <th>製品名</th>
+                        <th>数量</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for item in inventory if item.quantity > 0 %}
+                    <tr>
+                        <td>{{ item.product_name }}</td>
+                        <td>{{ "{:,}".format(item.quantity) }}</td>
+                    </tr>
+                    {% else %}
+                    <tr><td colspan="2">在庫なし</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
     <!-- 生産指示 -->
     <div class="card card-large">
         <div class="card-header">

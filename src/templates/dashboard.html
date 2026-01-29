@@ -15,7 +15,7 @@
             </div>
             <div class="stat-row">
                 <span class="label">従業員数</span>
-                <span class="value">{{ emp_count }}名</span>
+                <span class="value">{{ emp_count }} 名</span>
             </div>
             
             {% if alerts %}
@@ -43,7 +43,7 @@
             <ul class="news-list">
                 {% for item in news %}
                 <li class="news-item">
-                    <span class="news-date">Week {{ item.week }}</span>
+                    <span class="news-date">{{ item.week | format_week }}</span>
                     <span class="news-content">{{ item.message }}</span>
                 </li>
                 {% else %}
@@ -62,8 +62,7 @@
             <h2>世界情勢サマリ</h2>
         </div>
         <div class="card-body">
-            <p>景気: 普通</p>
-            <p>業界トレンド: SUV人気</p>
+            <p>景気: {{ economic_status }}</p>
             <div class="card-footer">
                 <a href="{{ url_for('world') }}" class="link-text">世界画面へ</a>
             </div>
@@ -78,11 +77,11 @@
         <div class="card-body">
             <div class="stat-row">
                 <span class="label">従業員数</span>
-                <span class="value">{{ emp_count }}</span>
+                <span class="value">{{ emp_count }} 名</span>
             </div>
             <div class="stat-row">
                 <span class="label">平均忠誠度</span>
-                <span class="value">50</span> <!-- 仮 -->
+                <span class="value">{{ avg_loyalty|int }}</span>
             </div>
             <div class="card-footer">
                 <a href="{{ url_for('hr') }}" class="link-text">人事画面へ</a>
@@ -96,8 +95,30 @@
             <h2>自分の企業の生産サマリ</h2>
         </div>
         <div class="card-body">
-            <p>稼働中のライン: 2</p>
-            <p>今週の生産予定: 300台</p>
+            <p>今週の生産指示数: {{ production_this_week }} 台</p>
+            <div class="card-footer">
+                <a href="{{ url_for('production') }}" class="link-text">生産画面へ</a>
+            </div>
+        </div>
+    </div>
+
+    <!-- 在庫サマリ -->
+    <div class="card">
+        <div class="card-header">
+            <h2>在庫サマリ</h2>
+        </div>
+        <div class="card-body">
+            <p>総在庫数: {{ "{:,}".format(total_inventory) }} 台</p>
+            
+            <ul class="news-list" style="margin-top: 10px;">
+                {% for item in inventory_details %}
+                <li class="news-item" style="justify-content: space-between;">
+                    <span>{{ item.product_name }}</span>
+                    <span>{{ "{:,}".format(item.quantity) }}</span>
+                </li>
+                {% endfor %}
+            </ul>
+
             <div class="card-footer">
                 <a href="{{ url_for('production') }}" class="link-text">生産画面へ</a>
             </div>
@@ -110,8 +131,7 @@
             <h2>労働市場サマリ</h2>
         </div>
         <div class="card-body">
-            <p>失業率: 5.0%</p>
-            <p>有効求人倍率: 1.2</p>
+            <p>失業率: {{ "%.1f"|format(unemployment_rate) }}%</p>
             <div class="card-footer">
                 <a href="{{ url_for('hr') }}" class="link-text">採用画面へ</a>
             </div>
@@ -124,7 +144,7 @@
             <h2>B2B取引サマリ</h2>
         </div>
         <div class="card-body">
-            <p>注文数: 5件</p>
+            <p>未承認の注文: {{ pending_orders }} 件</p>
             <div class="card-footer">
                 <a href="{{ url_for('sales') }}" class="link-text">営業画面へ</a>
             </div>
@@ -137,7 +157,11 @@
             <h2>開発サマリ</h2>
         </div>
         <div class="card-body">
-            <p>進行中: Model X</p>
+            {% if developing_project %}
+            <p>進行中: {{ developing_project.name }}</p>
+            {% else %}
+            <p>進行中のプロジェクトはありません。</p>
+            {% endif %}
             <div class="card-footer">
                 <a href="{{ url_for('dev') }}" class="link-text">開発画面へ</a>
             </div>

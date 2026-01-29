@@ -3,6 +3,35 @@
 
 {% block content %}
 <div class="dashboard-grid">
+    <!-- 自社在庫サマリ -->
+    <div class="card card-large">
+        <div class="card-header">
+            <h2>自社の販売可能在庫 (Total: {{ "{:,}".format(total_inventory) }}台)</h2>
+        </div>
+        <div class="card-body">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>製品名</th>
+                        <th>在庫数</th>
+                        <th>販売価格</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for item in my_inventory %}
+                    <tr>
+                        <td>{{ item.product_name }}</td>
+                        <td>{{ "{:,}".format(item.quantity) }}</td>
+                        <td>¥{{ "{:,}".format(item.sales_price) }}</td>
+                    </tr>
+                    {% else %}
+                    <tr><td colspan="3">在庫がありません。</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
     <!-- 受注待ちリスト -->
     <div class="card card-large">
         <div class="card-header">
@@ -51,7 +80,7 @@
             <table class="data-table">
                 <thead>
                     <tr>
-                        <th>Week</th>
+                        <th>時期</th>
                         <th>取引先</th>
                         <th>製品</th>
                         <th>数量</th>
@@ -61,7 +90,7 @@
                 <tbody>
                     {% for item in history %}
                     <tr>
-                        <td>{{ item.week }}</td>
+                        <td>{{ item.week | format_week }}</td>
                         <td>{{ item.partner_name }}</td>
                         <td>{{ item.product_name }}</td>
                         <td>{{ item.quantity }}</td>

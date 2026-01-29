@@ -365,7 +365,8 @@ class NPCLogic:
             target_stock = min(target_stock, max_stock_cap)
 
             # 売れ行き不振時の生産抑制: 在庫があるのに直近4週で売れていないなら生産しない
-            if current_stock > 10 and total_sales_4w == 0:
+            # ただし、ゲーム開始直後(Week 8未満)は実績がなくて当然なのでスキップ
+            if current_week > 8 and current_stock > 10 and total_sales_4w == 0:
                 target_stock = 0
             
             if current_stock >= target_stock: continue
@@ -443,8 +444,13 @@ class NPCLogic:
             # 営業力による価格補正の計算
             # メーカーの営業力が高いと、仕入れ値が高くなる（値引きを引き出せない）
             maker_caps = all_capabilities.get(item['maker_id'], {'sales': 50})
-
             sales_power = maker_caps['sales']
+            
+            # 営業力による「認知・信頼スコア」 (Visibility/Trust)
+            # 営業力が低いと、そもそも商品を知ってもらえない、あるいは信頼されない
+            # 0 -> 0.2 (激減), 50 -> 0.7, 100 -> 1.2 (ボーナス)
+            sales_visibility = 0.2 + (sales_power / 100.0)
+
             # 営業力50を基準に、1ポイントあたり0.2%価格変動
             price_multiplier = 1.0 + (sales_power - 50) * 0.002
             # 卸値の基準はMSRPの90% (小売取り分10%)
@@ -461,7 +467,7 @@ class NPCLogic:
             # 直感・相性 (Gut Feeling): 数値化できない相性や営業担当の印象など
             gut_feeling = random.uniform(0.9, 1.1)
             
-            score = ((item['concept_score'] * (1 + item['brand_power'] / 100.0)) / price_factor) * perception_noise * gut_feeling
+            score = ((item['concept_score'] * (1 + item['brand_power'] / 100.0)) / price_factor) * sales_visibility * perception_noise * gut_feeling
             scored_items.append({**item, 'score': score, 'actual_price': actual_price})
         
         # スコア順にソート
@@ -473,8 +479,8 @@ class NPCLogic:
         # 1. 自社の販売キャパシティと現在庫の確認 (my_capabilitiesは事前計算済み)
         sales_capacity = my_capabilities['store_throughput']
         
-        # 2. 目標在庫の設定 (販売キャパシティの4週分)
-        target_stock_total = sales_capacity * 4
+        # 2. 目標在庫の設定 (販売キャパシティの6週分 - 機会損失を防ぐため多めに確保)
+        target_stock_total = sales_capacity * 6
         current_total_stock = sum(inv['quantity'] for inv in my_inventory)
         
         # 3. 必要仕入れ数の計算

@@ -1,5 +1,6 @@
 # c:\0124newSIm\src\app.py
 from flask import Flask, render_template, request, redirect, url_for, flash
+from markupsafe import Markup
 import os
 import json
 import random
@@ -29,9 +30,7 @@ def inject_common_data():
     # 日付表示（週数から年月を簡易計算: 1月1週スタートと仮定）
     year = 2025 + (current_week - 1) // 52
     week_of_year = (current_week - 1) % 52 + 1
-    month = (week_of_year - 1) // 4 + 1
-    if month > 12: month = 12
-    date_str = f"{year}年 {month}月 第{week_of_year % 4 + 1}週 (Week {current_week})"
+    date_str = f"{year}年 Week {week_of_year}"
 
     return dict(
         player=player,
@@ -75,6 +74,27 @@ def ability_range_filter(value, hr_power):
     low, high = get_ability_bounds(value, hr_power)
     return f"{low}-{high}"
 
+def get_ability_color(value):
+    """能力値に応じた色コードを返す"""
+    if value < 40: return "#777777" # グレー
+    if value <= 50: return "#cccccc" # 明るいグレー
+    if value <= 60: return "#ffffff" # 白
+    if value <= 70: return "#4caf50" # 緑
+    if value <= 80: return "#b2ff59" # 明るい緑
+    if value <= 90: return "#ffeb3b" # 黄色
+    return "#ff5252" # 赤 (91以上)
+
+@app.template_filter('ability_range_colored')
+def ability_range_colored_filter(value, hr_power):
+    """能力値を人事能力に応じた色付き範囲表示HTMLに変換する"""
+    if value is None: return "-"
+    low, high = get_ability_bounds(value, hr_power)
+    
+    low_color = get_ability_color(low)
+    high_color = get_ability_color(high)
+    
+    return Markup(f'<span style="color: {low_color}">{low}</span>-<span style="color: {high_color}">{high}</span>')
+
 @app.template_filter('perceived_value')
 def perceived_value_filter(value, hr_power):
     """ソート用に、表示範囲の中央値（推定値）を返す"""
@@ -83,11 +103,25 @@ def perceived_value_filter(value, hr_power):
     
     return (low + high) / 2.0
 
+@app.template_filter('format_week')
+def format_week_filter(week):
+    """通算週数を 'YYYY年 Week N' 形式に変換する"""
+    if week is None: return "-"
+    try:
+        week = int(week)
+    except:
+        return week
+    year = 2025 + (week - 1) // 52
+    week_of_year = (week - 1) % 52 + 1
+    return f"{year}年 Week {week_of_year}"
+
 @app.route('/')
 def dashboard():
     player = get_player_company()
     if not player:
         return "Player company not found. Please run seed.py first."
+    
+    current_week = sim.get_current_week()
     
     # ダッシュボード用データの取得
     # 1. 資金
@@ -95,21 +129,63 @@ def dashboard():
     
     # 2. 従業員数
     emp_count = db.fetch_one("SELECT COUNT(*) as cnt FROM npcs WHERE company_id = ?", (player['id'],))['cnt']
-    
-    # 3. アラート（簡易実装：資金不足やキャパシティ不足など）
+    # 2.5 平均忠誠度
+    avg_loyalty_res = db.fetch_one("SELECT AVG(loyalty) as val FROM npcs WHERE company_id = ?", (player['id'],))
+    avg_loyalty = avg_loyalty_res['val'] if avg_loyalty_res and avg_loyalty_res['val'] else 0
+
+    # 3. アラート
     alerts = []
     if funds < 0:
         alerts.append("資金がマイナスです！倒産の危機です。")
     
-    # 未承認のB2B注文チェック
+    # 4. 未承認のB2B注文チェック
     pending_orders = db.fetch_one("SELECT COUNT(*) as cnt FROM b2b_orders WHERE seller_id = ? AND status = 'pending'", (player['id'],))['cnt']
     if pending_orders > 0:
         alerts.append(f"未承認の注文が {pending_orders} 件あります。「営業」画面で確認してください。")
     
-    # 4. ニュース（直近のログ）
-    news = db.fetch_all("SELECT * FROM news_logs WHERE week = ? ORDER BY id DESC LIMIT 5", (sim.get_current_week() - 1,))
+    # 5. ニュース（直近のログ）
+    news = db.fetch_all("SELECT * FROM news_logs WHERE week = ? ORDER BY id DESC LIMIT 5", (current_week - 1,))
     
-    return render_template('dashboard.html', funds=funds, emp_count=emp_count, alerts=alerts, news=news)
+    # 6. 世界情勢
+    game_state = db.fetch_one("SELECT economic_index FROM game_state")
+    economic_status = "好景気" if game_state['economic_index'] > 1.1 else "不景気" if game_state['economic_index'] < 0.9 else "普通"
+    
+    # 7. 労働市場
+    total_npcs = db.fetch_one("SELECT COUNT(*) as cnt FROM npcs")['cnt']
+    unemployed_npcs = db.fetch_one("SELECT COUNT(*) as cnt FROM npcs WHERE company_id IS NULL")['cnt']
+    unemployment_rate = (unemployed_npcs / total_npcs) * 100 if total_npcs > 0 else 0
+
+    # 8. 生産サマリ
+    prod_stats = db.fetch_one("SELECT production_ordered FROM weekly_stats WHERE week = ? AND company_id = ?", (current_week, player['id']))
+    production_this_week = prod_stats['production_ordered'] if prod_stats else 0
+
+    # 9. 開発サマリ
+    developing_project = db.fetch_one("SELECT name FROM product_designs WHERE company_id = ? AND status = 'developing'", (player['id'],))
+
+    # 10. 在庫サマリ
+    inventory_details = db.fetch_all("""
+        SELECT d.name as product_name, i.quantity
+        FROM inventory i JOIN product_designs d ON i.design_id = d.id
+        WHERE i.company_id = ? AND i.quantity > 0
+        ORDER BY i.quantity DESC
+    """, (player['id'],))
+    total_inventory = sum(item['quantity'] for item in inventory_details)
+
+    dashboard_data = {
+        "funds": funds,
+        "emp_count": emp_count,
+        "avg_loyalty": avg_loyalty,
+        "alerts": alerts,
+        "news": news,
+        "economic_status": economic_status,
+        "unemployment_rate": unemployment_rate,
+        "production_this_week": production_this_week,
+        "developing_project": developing_project,
+        "pending_orders": pending_orders,
+        "total_inventory": total_inventory,
+        "inventory_details": inventory_details
+    }
+    return render_template('dashboard.html', **dashboard_data)
 
 @app.route('/hr')
 def hr():
@@ -122,7 +198,7 @@ def hr():
     employees = db.fetch_all("SELECT * FROM npcs WHERE company_id = ?", (player['id'],))
     
     # 候補者一覧（労働市場）
-    candidates = db.fetch_all("SELECT * FROM npcs WHERE company_id IS NULL LIMIT 50")
+    candidates = db.fetch_all("SELECT * FROM npcs WHERE company_id IS NULL")
     
     # 部署リスト
     departments = gb.DEPARTMENTS
@@ -219,7 +295,7 @@ def hr_hire():
         """, (current_week, player['id'], npc_id, offer_salary, target_dept))
         flash("採用オファーを出しました。来週結果がわかります。", "info")
         
-    return redirect(url_for('hr'))
+    return redirect(url_for('hr', tab='candidates'))
 
 @app.route('/next_week', methods=['POST'])
 def next_week():
@@ -238,7 +314,11 @@ def production():
     designs = db.fetch_all("SELECT * FROM product_designs WHERE company_id = ? AND status = 'completed'", (player['id'],))
     
     # 現在の在庫
-    inventory = db.fetch_all("SELECT * FROM inventory WHERE company_id = ?", (player['id'],))
+    inventory = db.fetch_all("""
+        SELECT i.*, d.name as product_name 
+        FROM inventory i JOIN product_designs d ON i.design_id = d.id
+        WHERE i.company_id = ?
+    """, (player['id'],))
     inv_map = {i['design_id']: i['quantity'] for i in inventory}
     
     # 今週の生産済み数
@@ -260,13 +340,20 @@ def production():
     max_capacity = int(effective_staff_entities * gb.NPC_SCALE_FACTOR * efficiency)
     remaining_capacity = max(0, max_capacity - current_produced)
 
+    # 在庫サマリ
+    total_inventory = sum(inv_map.values())
+    inventory_value = sum(i['quantity'] * i['sales_price'] for i in inventory)
+
     return render_template('production.html', 
                            designs=designs, 
                            inv_map=inv_map, 
                            caps=caps, 
                            remaining_capacity=remaining_capacity,
                            max_capacity=max_capacity,
-                           current_produced=current_produced)
+                           current_produced=current_produced,
+                           total_inventory=total_inventory,
+                           inventory_value=inventory_value,
+                           inventory=inventory)
 
 @app.route('/production/order', methods=['POST'])
 def production_order():
@@ -354,7 +441,15 @@ def sales():
         WHERE c.type IN ('npc_maker', 'player') AND c.id != ? AND c.is_active = 1 AND i.quantity > 0
     """, (player['id'],))
     
-    return render_template('sales.html', pending_orders=pending_orders, history=history, market_stocks=market_stocks)
+    # 自社在庫サマリ
+    my_inventory = db.fetch_all("""
+        SELECT i.quantity, d.name as product_name, d.sales_price 
+        FROM inventory i JOIN product_designs d ON i.design_id = d.id 
+        WHERE i.company_id = ? AND i.quantity > 0
+    """, (player['id'],))
+    total_inventory = sum(i['quantity'] for i in my_inventory)
+
+    return render_template('sales.html', pending_orders=pending_orders, history=history, market_stocks=market_stocks, my_inventory=my_inventory, total_inventory=total_inventory)
 
 @app.route('/sales/action', methods=['POST'])
 def sales_action():
@@ -493,6 +588,155 @@ def world():
     ranking = db.fetch_all("SELECT * FROM companies WHERE type != 'system_supplier' AND is_active = 1 ORDER BY funds DESC")
     
     return render_template('world.html', trends=trends, ranking=ranking)
+
+@app.route('/finance')
+def finance():
+    player = get_player_company()
+    current_week = sim.get_current_week()
+    
+    # パラメータ取得
+    period = request.args.get('period', 'weekly') # weekly, quarterly, yearly
+    try:
+        target = int(request.args.get('target', 0))
+    except:
+        target = 0
+
+    # デフォルトターゲットの設定（指定がない場合）
+    if target == 0:
+        if period == 'weekly':
+            target = max(1, current_week - 1)
+        elif period == 'quarterly':
+            # 現在の週が含まれる四半期
+            current_q = (current_week - 1) // 13 + 1
+            target = max(1, current_q if (current_week - 1) % 13 != 0 else current_q - 1)
+        elif period == 'yearly':
+            current_y = (current_week - 1) // 52 + 1
+            target = max(1, current_y if (current_week - 1) % 52 != 0 else current_y - 1)
+
+    # 期間の開始・終了週を計算
+    start_week = 1
+    end_week = 1
+    label = ""
+
+    if period == 'weekly':
+        start_week = target
+        end_week = target
+        y = 2025 + (target - 1) // 52
+        w = (target - 1) % 52 + 1
+        label = f"{y}年 Week {w}"
+    elif period == 'quarterly':
+        start_week = (target - 1) * 13 + 1
+        end_week = target * 13
+        y = 2025 + (target - 1) // 4
+        q = (target - 1) % 4 + 1
+        s_w = (start_week - 1) % 52 + 1
+        e_w = (end_week - 1) % 52 + 1
+        label = f"{y}年 第{q}四半期 (Week {s_w}-{e_w})"
+    elif period == 'yearly':
+        start_week = (target - 1) * 52 + 1
+        end_week = target * 52
+        y = 2025 + (target - 1)
+        label = f"{y}年 (第{target}期)"
+
+    # ナビゲーション用のターゲット
+    prev_target = target - 1 if target > 1 else None
+    next_target = target + 1
+
+    # --- PL (損益計算書) 集計 ---
+    entries = db.fetch_all("""
+        SELECT category, SUM(amount) as total 
+        FROM account_entries 
+        WHERE company_id = ? AND week BETWEEN ? AND ?
+        GROUP BY category
+    """, (player['id'], start_week, end_week))
+    
+    pl = {
+        'revenue': 0,
+        'cogs': 0,
+        'gross_profit': 0,
+        'labor': 0,
+        'rent': 0,
+        'ad': 0,
+        'other_sga': 0,
+        'operating_profit': 0,
+        'interest': 0,
+        'net_profit': 0
+    }
+    
+    for e in entries:
+        cat = e['category']
+        amt = e['total']
+        
+        if cat == 'revenue':
+            pl['revenue'] += amt
+        elif cat == 'cogs':
+            pl['cogs'] += amt
+        elif 'labor' in cat:
+            pl['labor'] += amt
+        elif 'rent' in cat:
+            pl['rent'] += amt
+        elif cat == 'ad':
+            pl['ad'] += amt
+        elif cat == 'interest':
+            pl['interest'] += amt
+        # material, stock_purchase, facility_purchase はPL費用ではないため除外(CF/BS項目)
+    
+    pl['gross_profit'] = pl['revenue'] - pl['cogs']
+    total_sga = pl['labor'] + pl['rent'] + pl['ad'] + pl['other_sga']
+    pl['operating_profit'] = pl['gross_profit'] - total_sga
+    pl['net_profit'] = pl['operating_profit'] - pl['interest']
+    
+    # --- BS (貸借対照表) ---
+    bs = {
+        'cash': player['funds'],
+        'inventory': 0,
+        'fixed_assets': 0,
+        'total_assets': 0,
+        'debt': 0,
+        'equity': 0
+    }
+    
+    # 在庫評価額
+    # 自社製品は製造原価、他社製品は仕入れ値(推定)で計算
+    inventory_items = db.fetch_all("""
+        SELECT i.quantity, d.company_id as maker_id, d.parts_config, d.sales_price 
+        FROM inventory i 
+        JOIN product_designs d ON i.design_id = d.id 
+        WHERE i.company_id = ?
+    """, (player['id'],))
+    
+    for item in inventory_items:
+        qty = item['quantity']
+        if item['maker_id'] == player['id']:
+            # 自社製品: 製造原価 (パーツコスト合計)
+            try:
+                p_conf = json.loads(item['parts_config'])
+                unit_cost = sum(p['cost'] for p in p_conf.values())
+            except:
+                unit_cost = 0
+            bs['inventory'] += qty * unit_cost
+        else:
+            # 他社製品: 仕入れ原価 (MSRPの70%と仮定)
+            bs['inventory'] += qty * int(item['sales_price'] * 0.7)
+            
+    # 固定資産 (自社保有施設)
+    owned_facilities = db.fetch_all("SELECT rent FROM facilities WHERE company_id = ? AND is_owned = 1", (player['id'],))
+    for fac in owned_facilities:
+        # 購入価格 = 賃料 * 100 (gamebalance.py FACILITY_PURCHASE_MULTIPLIER)
+        bs['fixed_assets'] += fac['rent'] * 100
+        
+    bs['total_assets'] = bs['cash'] + bs['inventory'] + bs['fixed_assets']
+    
+    # 負債
+    loans = db.fetch_one("SELECT SUM(amount) as total FROM loans WHERE company_id = ?", (player['id'],))
+    bs['debt'] = loans['total'] if loans and loans['total'] else 0
+    
+    # 純資産
+    bs['equity'] = bs['total_assets'] - bs['debt']
+
+    return render_template('finance.html', pl=pl, bs=bs, 
+                           period=period, target=target, label=label,
+                           prev_target=prev_target, next_target=next_target)
 
 if __name__ == '__main__':
     # データベースがない場合は初期化
