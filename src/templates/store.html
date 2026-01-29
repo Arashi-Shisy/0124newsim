@@ -21,7 +21,7 @@
             <ul class="news-list">
                 {% for store in stores %}
                 <li class="news-item">
-                    Store #{{ store.id }} (Size: {{ store.size }}, Access: {{ store.access_score }})
+                    {{ store.name }} (Size: {{ store.size }}, Access: {{ store.access_score }})
                 </li>
                 {% endfor %}
             </ul>

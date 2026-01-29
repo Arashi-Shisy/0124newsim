@@ -6,6 +6,7 @@ import math
 import random
 from database import db
 import gamebalance as gb
+import name_generator
 
 class NPCLogic:
     def __init__(self, company_id, company_data=None, employees=None):
@@ -48,7 +49,7 @@ class NPCLogic:
     def _calculate_weekly_fixed_costs(self):
         """固定費（人件費、家賃、金利）の週次合計を算出"""
         # Labor
-        labor = sum(e['salary'] for e in self.employees) / gb.WEEKS_PER_YEAR_REAL
+        labor = sum(e['salary'] * gb.NPC_SCALE_FACTOR for e in self.employees) / gb.WEEKS_PER_YEAR_REAL
         
         # Rent
         res_rent = db.fetch_one("SELECT SUM(rent) as total FROM facilities WHERE company_id = ? AND is_owned = 0", (self.company_id,))
@@ -130,7 +131,7 @@ class NPCLogic:
         hr_employees = [e for e in self.employees if e['department'] == gb.DEPT_HR]
         total_hr_power = sum([e['hr'] for e in hr_employees])
         # 人事部が0人の場合でも最低限の採用活動ができるように補正
-        hr_capacity = max(total_hr_power * gb.HR_CAPACITY_PER_PERSON, 5)
+        hr_capacity = max(total_hr_power * gb.HR_CAPACITY_PER_PERSON, 5) # HR_CAPACITY_PER_PERSON is per NPC? No, per person.
         
         current_employees_count = len(self.employees)
         
@@ -138,7 +139,10 @@ class NPCLogic:
         target_dept = None
         if current_employees_count >= hr_capacity * 0.9:
             # キャパシティ限界に近い場合は人事部を優先
-            target_dept = gb.DEPT_HR
+            # Note: hr_capacity is raw number of people manageable. current_employees_count is NPCs.
+            # We need to compare scaled count.
+            if (current_employees_count * gb.NPC_SCALE_FACTOR) >= hr_capacity * 0.9:
+                target_dept = gb.DEPT_HR
         else:
             # 業態ごとの優先順位
             if self.company['type'] == 'npc_maker':
@@ -159,7 +163,7 @@ class NPCLogic:
             target_dept = random.choice(gb.DEPARTMENTS)
 
         # 2. 予算チェック (年収の2倍程度の余裕があるか)
-        if self.company['funds'] > gb.BASE_SALARY_YEARLY * 2:
+        if self.company['funds'] > gb.BASE_SALARY_YEARLY * gb.NPC_SCALE_FACTOR * 2:
             # 人事能力による誤差範囲の計算
             # 人事力100 -> 誤差4, 人事力0 -> 誤差40
             avg_hr = sum([e['hr'] for e in hr_employees]) / len(hr_employees) if hr_employees else 0
@@ -304,12 +308,12 @@ class NPCLogic:
         
         # 能力が高い順に工場に入れる（あふれた従業員は生産に寄与しない）
         prod_employees.sort(key=lambda x: x['production'], reverse=True)
-        effective_employees = prod_employees[:total_factory_size]
+        effective_employees = prod_employees[:int(total_factory_size // gb.NPC_SCALE_FACTOR)]
 
         total_capacity = 0
         for emp in effective_employees:
             # 能力50で基準効率(0.17台)が出る計算
-            total_capacity += (emp['production'] / 50.0) * gb.BASE_PRODUCTION_EFFICIENCY
+            total_capacity += (emp['production'] / 50.0) * gb.BASE_PRODUCTION_EFFICIENCY * gb.NPC_SCALE_FACTOR
         
         for design in designs:
             # キャパシティが1台分未満でも、確率的に1台作れるようにする（あるいは最低1台は作れるようにする）
@@ -444,10 +448,11 @@ class NPCLogic:
             # 営業力50を基準に、1ポイントあたり0.2%価格変動
             price_multiplier = 1.0 + (sales_power - 50) * 0.002
             # 卸値の基準はMSRPの90% (小売取り分10%)
-            wholesale_base = item['sales_price'] * 0.9
+            wholesale_base = max(1, item['sales_price'] * 0.9) # 0円防止
             actual_price = int(wholesale_base * price_multiplier)
             
             price_factor = actual_price / 3000000.0 # 300万を基準に正規化
+            if price_factor <= 0: price_factor = 0.1 # ゼロ除算防止
             
             # 評価のブレ: CEOの能力が低いと商品の価値を見誤る
             noise_range = 0.3 * (1.0 - ceo_precision) # 最大±30%
@@ -511,6 +516,11 @@ class NPCLogic:
             """, (current_week, self.company_id, item['maker_id'], item['design_id'], buy_qty, cost))
             
             db.log_file_event(current_week, self.company_id, "B2B Order", f"Ordered {buy_qty} units from Maker ID {item['maker_id']} for {cost} yen")
+            
+            # 売り手（プレイヤー等）にも通知を出す
+            db.execute_query("INSERT INTO news_logs (week, company_id, message, type) VALUES (?, ?, ?, ?)",
+                             (current_week, item['maker_id'], f"{self.company['name']} から {buy_qty}台 の注文が入りました (営業画面で確認してください)", 'info'))
+            
             budget -= cost
             needed_total -= buy_qty
 
@@ -560,7 +570,7 @@ class NPCLogic:
             # 開発方針をランダムに決定
             strategy = random.choice(list(gb.DEV_STRATEGIES.keys()))
 
-            name = f"Model {random.randint(1, 999)}-{chr(random.randint(65, 90))}"
+            name = name_generator.generate_product_name(strategy)
             
             # DBに登録 (status='developing')
             # base_price, sales_price は完成時に確定するため仮置き
@@ -660,9 +670,9 @@ class NPCLogic:
                         db.execute_query("UPDATE facilities SET company_id = ?, is_owned = 0 WHERE id = ?", (self.company_id, available['id']))
                         db.log_file_event(current_week, self.company_id, "Facility", f"Rented {ftype} (Size: {available['size']})")
 
-        acquire_facility('factory', factory_needs, current_cap['factory'], gb.RENT_FACTORY)
-        acquire_facility('store', store_needs, current_cap['store'], gb.RENT_STORE_BASE)
-        acquire_facility('office', office_needs, current_cap['office'], gb.RENT_OFFICE)
+        acquire_facility('factory', factory_needs * gb.NPC_SCALE_FACTOR, current_cap['factory'], gb.RENT_FACTORY)
+        acquire_facility('store', store_needs * gb.NPC_SCALE_FACTOR, current_cap['store'], gb.RENT_STORE_BASE)
+        acquire_facility('office', office_needs * gb.NPC_SCALE_FACTOR, current_cap['office'], gb.RENT_OFFICE)
 
     def decide_advertising(self, current_week):
         """

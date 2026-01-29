@@ -43,6 +43,7 @@ class Database:
             brand_power REAL DEFAULT 0,
             industry TEXT DEFAULT 'automotive',
             credit_rating INTEGER DEFAULT 50,
+            dev_knowhow REAL DEFAULT 0,
             borrowing_limit INTEGER DEFAULT 0,
             is_active BOOLEAN DEFAULT 1,
             -- Supplier Traits
@@ -125,6 +126,7 @@ class Database:
         CREATE TABLE IF NOT EXISTS facilities (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             company_id INTEGER,
+            name TEXT,
             type TEXT, -- 'office', 'factory', 'store'
             size INTEGER, -- 収容人数
             rent INTEGER,

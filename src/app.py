@@ -2,6 +2,7 @@
 from flask import Flask, render_template, request, redirect, url_for, flash
 import os
 import json
+import random
 import sqlite3
 from database import db
 from simulation import Simulation
@@ -39,19 +40,48 @@ def inject_common_data():
         active_page=request.endpoint
     )
 
+def get_ability_bounds(value, hr_power):
+    """能力値と人事力から、表示範囲(low, high)を計算する共通関数"""
+    # 誤差範囲: 人事力0で40(±20), 人事力100で4(±2)
+    # 0-100の範囲に収める
+    width = 40 - (36 * (min(100, max(0, hr_power)) / 100.0))
+    
+    # 週と値に基づいてシードを決定（週が変わると表示範囲も変わる＝再評価される）
+    current_week = sim.get_current_week()
+    seed = (current_week * 1000) + value
+    rng = random.Random(seed)
+    
+    # 真の値が範囲内のどこに来るかをランダムに決定 (0.0 ~ 1.0)
+    bias = rng.random()
+    
+    # 範囲の計算 (value = low + width * bias)
+    low = value - (width * bias)
+    high = low + width
+    
+    # 0-100の範囲に収める（幅を維持するようにスライド）
+    if low < 0:
+        low = 0
+        high = width
+    elif high > 100:
+        high = 100
+        low = 100 - width
+        
+    return max(0, int(low)), min(100, int(high))
+
 @app.template_filter('ability_range')
 def ability_range_filter(value, hr_power):
     """能力値を人事能力に応じた範囲表示文字列に変換する"""
     if value is None: return "-"
-    # 誤差範囲: 人事力0で40(±20), 人事力100で4(±2)
-    # 0-100の範囲に収める
-    width = 40 - (36 * (min(100, max(0, hr_power)) / 100.0))
-    half_width = width / 2.0
-    
-    low = max(0, int(value - half_width))
-    high = min(100, int(value + half_width))
-    
+    low, high = get_ability_bounds(value, hr_power)
     return f"{low}-{high}"
+
+@app.template_filter('perceived_value')
+def perceived_value_filter(value, hr_power):
+    """ソート用に、表示範囲の中央値（推定値）を返す"""
+    if value is None: return 0
+    low, high = get_ability_bounds(value, hr_power)
+    
+    return (low + high) / 2.0
 
 @app.route('/')
 def dashboard():
@@ -70,6 +100,11 @@ def dashboard():
     alerts = []
     if funds < 0:
         alerts.append("資金がマイナスです！倒産の危機です。")
+    
+    # 未承認のB2B注文チェック
+    pending_orders = db.fetch_one("SELECT COUNT(*) as cnt FROM b2b_orders WHERE seller_id = ? AND status = 'pending'", (player['id'],))['cnt']
+    if pending_orders > 0:
+        alerts.append(f"未承認の注文が {pending_orders} 件あります。「営業」画面で確認してください。")
     
     # 4. ニュース（直近のログ）
     news = db.fetch_all("SELECT * FROM news_logs WHERE week = ? ORDER BY id DESC LIMIT 5", (sim.get_current_week() - 1,))
@@ -91,8 +126,26 @@ def hr():
     
     # 部署リスト
     departments = gb.DEPARTMENTS
+
+    # 部署別統計の集計
+    dept_stats = {}
+    for d in departments:
+        count = len([e for e in employees if e['department'] == d])
+        space = count * gb.NPC_SCALE_FACTOR
+        dept_stats[d] = {'count': count, 'space': space}
     
-    return render_template('hr.html', employees=employees, candidates=candidates, departments=departments, hr_power=caps['hr'])
+    # 交渉中（オファー済み）の候補者取得
+    offers = db.fetch_all("""
+        SELECT j.*, n.name, n.age, n.desired_salary as current_desired, 
+               n.diligence, n.adaptability, n.production, n.store_ops, n.sales, n.hr, n.development, n.pr, n.accounting, n.management
+        FROM job_offers j
+        JOIN npcs n ON j.npc_id = n.id
+        WHERE j.company_id = ?
+    """, (player['id'],))
+
+    offered_npc_ids = [o['npc_id'] for o in offers]
+    
+    return render_template('hr.html', employees=employees, candidates=candidates, departments=departments, caps=caps, hr_power=caps['hr'], npc_scale=gb.NPC_SCALE_FACTOR, dept_stats=dept_stats, offers=offers, offered_npc_ids=offered_npc_ids)
 
 @app.route('/hr/change_dept', methods=['POST'])
 def hr_change_dept():
@@ -100,7 +153,20 @@ def hr_change_dept():
     new_dept = request.form.get('new_dept')
     new_role = request.form.get('new_role')
     
+    player = get_player_company()
+
     if npc_id and new_dept:
+        # 役職制限チェック (部長・部長補佐は各部署1人まで)
+        if new_role in [gb.ROLE_MANAGER, gb.ROLE_ASSISTANT_MANAGER]:
+            existing = db.fetch_one("""
+                SELECT id, name FROM npcs 
+                WHERE company_id = ? AND department = ? AND role = ? AND id != ?
+            """, (player['id'], new_dept, new_role, npc_id))
+            
+            if existing:
+                flash(f"{new_dept}には既に{existing['name']}が{new_role}として着任しています。各部署1名までです。", "error")
+                return redirect(url_for('hr'))
+
         db.execute_query("UPDATE npcs SET department = ?, role = ? WHERE id = ?", (new_dept, new_role, npc_id))
         flash(f"人事異動を発令しました。", "success")
     
@@ -189,9 +255,9 @@ def production():
     # 最大生産可能数 (人 * 効率) - 既に生産した分
     # 工場サイズ分の人数しか働けない
     prod_staff_count = len(db.fetch_all("SELECT id FROM npcs WHERE company_id = ? AND department = ?", (player['id'], gb.DEPT_PRODUCTION)))
-    effective_staff = min(prod_staff_count, total_factory_size)
+    effective_staff_entities = min(prod_staff_count, int(total_factory_size // gb.NPC_SCALE_FACTOR))
     
-    max_capacity = int(effective_staff * efficiency)
+    max_capacity = int(effective_staff_entities * gb.NPC_SCALE_FACTOR * efficiency)
     remaining_capacity = max(0, max_capacity - current_produced)
 
     return render_template('production.html', 
@@ -278,7 +344,17 @@ def sales():
         ORDER BY t.id DESC LIMIT 20
     """, (player['id'], player['id'], player['id'], player['id']))
     
-    return render_template('sales.html', pending_orders=pending_orders, history=history)
+    # 仕入れ市場 (他社メーカーの在庫)
+    market_stocks = db.fetch_all("""
+        SELECT i.quantity, i.design_id, d.name as product_name, d.sales_price, d.concept_score, 
+               i.company_id as seller_id, c.name as seller_name, c.brand_power
+        FROM inventory i
+        JOIN product_designs d ON i.design_id = d.id
+        JOIN companies c ON i.company_id = c.id
+        WHERE c.type IN ('npc_maker', 'player') AND c.id != ? AND c.is_active = 1 AND i.quantity > 0
+    """, (player['id'],))
+    
+    return render_template('sales.html', pending_orders=pending_orders, history=history, market_stocks=market_stocks)
 
 @app.route('/sales/action', methods=['POST'])
 def sales_action():
@@ -290,6 +366,28 @@ def sales_action():
         db.execute_query("UPDATE b2b_orders SET status = ? WHERE id = ?", (status, order_id))
         flash(f"注文を{'受注' if status=='accepted' else '拒否'}しました。", "info")
         
+    return redirect(url_for('sales'))
+
+@app.route('/sales/buy', methods=['POST'])
+def sales_buy():
+    player = get_player_company()
+    seller_id = request.form.get('seller_id')
+    design_id = request.form.get('design_id')
+    quantity = int(request.form.get('quantity', 0))
+    price = int(request.form.get('price', 0))
+    current_week = sim.get_current_week()
+    
+    if quantity > 0:
+        amount = quantity * price
+        if player['funds'] >= amount:
+            db.execute_query("""
+                INSERT INTO b2b_orders (week, buyer_id, seller_id, design_id, quantity, amount, status)
+                VALUES (?, ?, ?, ?, ?, ?, 'pending')
+            """, (current_week, player['id'], seller_id, design_id, quantity, amount))
+            flash(f"発注を行いました (承認待ち): {quantity}台", "success")
+        else:
+            flash("資金が不足しています。", "error")
+            
     return redirect(url_for('sales'))
 
 @app.route('/dev')
@@ -369,6 +467,23 @@ def facility():
     market_facilities = db.fetch_all("SELECT * FROM facilities WHERE company_id IS NULL LIMIT 50")
     
     return render_template('facility.html', my_facilities=my_facilities, market_facilities=market_facilities)
+
+@app.route('/facility/contract', methods=['POST'])
+def facility_contract():
+    player = get_player_company()
+    facility_id = request.form.get('facility_id')
+    
+    if facility_id:
+        # 物件が空いているか確認
+        fac = db.fetch_one("SELECT * FROM facilities WHERE id = ? AND company_id IS NULL", (facility_id,))
+        if fac:
+            # 契約処理 (賃貸)
+            db.execute_query("UPDATE facilities SET company_id = ?, is_owned = 0 WHERE id = ?", (player['id'], facility_id))
+            flash(f"{fac['name']} (賃料: ¥{fac['rent']:,}/週) を契約しました。", "success")
+        else:
+            flash("この物件は既に契約済みか、存在しません。", "error")
+    
+    return redirect(url_for('facility'))
 
 @app.route('/world')
 def world():

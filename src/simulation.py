@@ -7,6 +7,7 @@ import math
 from database import db
 import gamebalance as gb
 from npc_logic import NPCLogic
+import name_generator
 from seed import generate_random_npc
 
 class Simulation:
@@ -41,16 +42,27 @@ class Simulation:
             'hr_capacity': 0, 'pr_capacity': 0, 'accounting_capacity': 0, 'store_ops_capacity': 0,
             'store_throughput': 0
         }
-        
-        if not employees:
-            return caps
 
         # 施設キャパシティの取得
         facilities = db.fetch_all("SELECT type, size FROM facilities WHERE company_id = ?", (company_id,))
-        caps_limit = {'factory': 0, 'store': 0, 'office': 0}
+        
+        # 基礎キャパシティ (施設がなくても最低限活動できる場所: ガレージ/自宅など)
+        # NPC_SCALE_FACTOR(8) * 1.5人分 = 12 程度確保しておく
+        base_cap = int(gb.NPC_SCALE_FACTOR * 1.5)
+        caps_limit = {'factory': base_cap, 'store': base_cap, 'office': base_cap}
         for f in facilities:
             if f['type'] in caps_limit:
                 caps_limit[f['type']] += f['size']
+
+        # 施設稼働状況の初期化 (従業員がいない場合用)
+        caps['facilities'] = {
+            'factory': {'name': '工場', 'usage': 0, 'npc_count': 0, 'limit': int(caps_limit['factory']), 'efficiency': 1.0},
+            'store': {'name': '店舗', 'usage': 0, 'npc_count': 0, 'limit': int(caps_limit['store']), 'efficiency': 1.0},
+            'office': {'name': 'オフィス', 'usage': 0, 'npc_count': 0, 'limit': int(caps_limit['office']), 'efficiency': 1.0}
+        }
+        
+        if not employees:
+            return caps
 
         # 勤勉さ平均 (安定性)
         if employees:
@@ -66,29 +78,37 @@ class Simulation:
         for e in employees:
             d = e['department']
             if d in dept_staff:
-                dept_staff[d].append(e)
-                if e['role'] == gb.ROLE_MANAGER:
-                    dept_managers[d].append(e)
-                elif e['role'] in [gb.ROLE_CXO, gb.ROLE_CEO]:
+                # 役員 (CxO, CEO) は現場人員(dept_staff)には含めない
+                # ただし、マネジメントボーナス計算用に dept_cxos には追加する
+                if e['role'] in [gb.ROLE_CXO, gb.ROLE_CEO]:
                     dept_cxos[d].append(e)
+                else:
+                    # 一般社員、部長、部長補佐
+                    dept_staff[d].append(e)
+                    if e['role'] == gb.ROLE_MANAGER:
+                        dept_managers[d].append(e)
         
         # キャパシティ制限の適用 (あふれた人員は計算から除外、または効率低下)
+        # 使用量記録 (補正前)
+        prod_usage = len(dept_staff[gb.DEPT_PRODUCTION]) * gb.NPC_SCALE_FACTOR
+        store_usage = len(dept_staff[gb.DEPT_STORE]) * gb.NPC_SCALE_FACTOR
+        
         # 生産部 -> 工場
         prod_staff = dept_staff[gb.DEPT_PRODUCTION]
-        if len(prod_staff) > caps_limit['factory']:
+        if len(prod_staff) * gb.NPC_SCALE_FACTOR > caps_limit['factory']:
             # 能力が高い順に優先して施設に入れる
             prod_staff.sort(key=lambda x: x['production'], reverse=True)
-            dept_staff[gb.DEPT_PRODUCTION] = prod_staff[:caps_limit['factory']]
+            dept_staff[gb.DEPT_PRODUCTION] = prod_staff[:int(caps_limit['factory'] // gb.NPC_SCALE_FACTOR)]
         
         # 店舗部 -> 店舗
         store_staff = dept_staff[gb.DEPT_STORE]
-        if len(store_staff) > caps_limit['store']:
+        if len(store_staff) * gb.NPC_SCALE_FACTOR > caps_limit['store']:
             store_staff.sort(key=lambda x: x['store_ops'], reverse=True)
-            dept_staff[gb.DEPT_STORE] = store_staff[:caps_limit['store']]
+            dept_staff[gb.DEPT_STORE] = store_staff[:int(caps_limit['store'] // gb.NPC_SCALE_FACTOR)]
             
         # その他部署 -> オフィス
         office_depts = [gb.DEPT_SALES, gb.DEPT_DEV, gb.DEPT_HR, gb.DEPT_PR, gb.DEPT_ACCOUNTING]
-        total_office_staff = sum(len(dept_staff[d]) for d in office_depts)
+        total_office_staff = sum(len(dept_staff[d]) for d in office_depts) * gb.NPC_SCALE_FACTOR
         
         office_efficiency = 1.0
         if total_office_staff > caps_limit['office'] and total_office_staff > 0:
@@ -134,10 +154,10 @@ class Simulation:
                 # キャパシティ計算 (要件定義に基づく)
                 if stat == 'store_ops':
                     # 店舗運営キャパシティ: 合計 + マネジメント
-                    caps[f"{stat}_capacity"] = (sum_stat + mgmt_bonus) * efficiency
+                    caps[f"{stat}_capacity"] = (sum_stat + mgmt_bonus) * efficiency * gb.NPC_SCALE_FACTOR
                 else:
                     # その他: 合計
-                    caps[f"{stat}_capacity"] = sum_stat * efficiency
+                    caps[f"{stat}_capacity"] = sum_stat * efficiency * gb.NPC_SCALE_FACTOR
         
         # 安定性によるデバフ (要件: 低い場合ランダムでデバフ発生)
         # 安定性が50未満の場合、確率で全能力ダウン (日によって調子が悪い)
@@ -147,19 +167,47 @@ class Simulation:
             penalty_factor = 1.0 - random.uniform(0, max_penalty)
             
             for key in caps:
-                if key != 'stability': # 安定性自体は下げない
+                if key != 'stability' and isinstance(caps[key], (int, float)): # 安定性自体は下げない。辞書型(facilities)も除外
                     caps[key] *= penalty_factor
 
         # 販売キャパシティ計算 (店舗スタッフ数 * 効率 * 能力補正)
         # process_b2cでの再クエリを避けるためここで計算 (名称をstore_throughputに変更)
         store_staff_count = len(dept_staff[gb.DEPT_STORE])
-        caps['store_throughput'] = store_staff_count * gb.BASE_SALES_EFFICIENCY * (caps['store_ops'] / 50.0)
+        caps['store_throughput'] = store_staff_count * gb.NPC_SCALE_FACTOR * gb.BASE_SALES_EFFICIENCY * (caps['store_ops'] / 50.0)
+        
+        # 施設稼働状況の記録
+        caps['facilities'] = {
+            'factory': {
+                'name': '工場',
+                'usage': int(prod_usage),
+                'npc_count': len(dept_staff[gb.DEPT_PRODUCTION]),
+                'limit': int(caps_limit['factory']),
+                'efficiency': 1.0 if prod_usage <= caps_limit['factory'] else caps_limit['factory'] / prod_usage if prod_usage > 0 else 1.0
+            },
+            'store': {
+                'name': '店舗',
+                'usage': int(store_usage),
+                'npc_count': len(dept_staff[gb.DEPT_STORE]),
+                'limit': int(caps_limit['store']),
+                'efficiency': 1.0 if store_usage <= caps_limit['store'] else caps_limit['store'] / store_usage if store_usage > 0 else 1.0
+            },
+            'office': {
+                'name': 'オフィス',
+                'usage': int(total_office_staff),
+                'npc_count': sum(len(dept_staff[d]) for d in office_depts),
+                'limit': int(caps_limit['office']),
+                'efficiency': office_efficiency
+            }
+        }
         
         return caps
 
     def proceed_week(self):
         current_week = self.get_current_week()
         print(f"[Week {current_week}] Simulation Start")
+
+        # 0. B2B注文の自動取り下げ (前週以前の未承認注文を期限切れにする)
+        db.execute_query("UPDATE b2b_orders SET status = 'expired' WHERE status = 'pending' AND week < ?", (current_week,))
 
         # 1. NPC意思決定
         # --- パフォーマンス改善: 意思決定に必要なデータを一括で事前取得 ---
@@ -220,11 +268,12 @@ class Simulation:
                 orders_for_seller[order['seller_id']].append(order)
 
         # 市場のメーカー在庫 (小売の仕入れ判断用)
+        # 修正: 在庫の所有者(i.company_id)がメーカーまたはプレイヤーであるものを対象とする
         maker_stocks = db.fetch_all("""
-            SELECT i.quantity, i.design_id, d.sales_price, d.concept_score, d.company_id as maker_id, c.brand_power
+            SELECT i.quantity, i.design_id, d.sales_price, d.concept_score, i.company_id as maker_id, c.brand_power
             FROM inventory i
             JOIN product_designs d ON i.design_id = d.id
-            JOIN companies c ON d.company_id = c.id
+            JOIN companies c ON i.company_id = c.id
             WHERE c.type IN ('player', 'npc_maker') AND c.is_active = 1 AND i.quantity > 0
         """)
 
@@ -291,6 +340,10 @@ class Simulation:
         # 6. 開発進捗処理
         self.process_development(current_week)
         print(f"[Week {current_week}] Phase 6: Development Processing Finished")
+
+        # 6. 製品陳腐化処理
+        self.process_product_obsolescence(current_week)
+        print(f"[Week {current_week}] Phase 6: Product Obsolescence Finished")
 
         # 6. 加齢・引退処理
         self.process_aging(current_week)
@@ -487,7 +540,7 @@ class Simulation:
             SELECT i.id, i.company_id, i.quantity, i.sales_price as retail_price, i.design_id, d.name as product_name,
                    d.concept_score, d.base_price, d.sales_price as msrp, d.awareness, d.material_score, d.parts_config,
                    c.brand_power as retail_brand, c.type as company_type,
-                   m.brand_power as maker_brand
+                   m.brand_power as maker_brand, m.id as creator_id
             FROM inventory i
             JOIN product_designs d ON i.design_id = d.id
             JOIN companies c ON i.company_id = c.id
@@ -610,8 +663,8 @@ class Simulation:
                 revenue = sold * stock['retail_price']
                 
                 # 売上原価(COGS)の計算
-                if stock['company_type'] in ['player', 'npc_maker']:
-                    # メーカー直販の場合: 原価は材料費
+                if stock['company_id'] == stock['creator_id']:
+                    # 自社製造 (Maker/Player as Maker) の場合: 原価は材料費
                     p_conf = json.loads(stock['parts_config']) if stock['parts_config'] else {}
                     unit_cost = sum(p['cost'] for p in p_conf.values()) if p_conf else 0
                     cogs = sold * unit_cost
@@ -712,10 +765,15 @@ class Simulation:
             
             # HR能力計算
             caps = self.calculate_capabilities(comp['id'], employees=employees)
-            hr_power_sum = caps['hr'] * len([e for e in employees if e['department'] == gb.DEPT_HR]) # キャパシティは合計値ベース
+            
+            # 供給キャパシティ: 人事部員の能力合計(スケール済み) + 経営者分の基礎キャパシティ
+            # 経営者分として、能力50のNPC1人分(スケール済み)を常に加算する（小規模組織の救済）
+            base_hr_capacity = 50 * gb.NPC_SCALE_FACTOR
+            hr_power_sum = caps['hr_capacity'] + base_hr_capacity
 
-            # 必要HRキャパシティ: 50 * (全従業員 / 7)
-            required_capacity = 50 * (len(employees) / 7.0)
+            # 必要HRキャパシティ: 50 * (全従業員数(実数) / 7)
+            # つまり、人事能力50の担当者1人で7人(実数)を見れる計算
+            required_capacity = 50 * ((len(employees) * gb.NPC_SCALE_FACTOR) / 7.0)
             
             # 忠誠度変化
             loyalty_delta = 0
@@ -830,7 +888,7 @@ class Simulation:
                     updates_to_run.append((sql, tuple(params)))
 
                 # 3. 給与支払い
-                weekly_salary = npc['salary'] / gb.WEEKS_PER_YEAR_REAL
+                weekly_salary = (npc['salary'] * gb.NPC_SCALE_FACTOR) / gb.WEEKS_PER_YEAR_REAL
                 
                 dept = npc['department']
                 cat = 'labor'
@@ -913,6 +971,7 @@ class Simulation:
                 
                 # 企業の開発力を計算
                 caps = self.calculate_capabilities(company_id)
+                company_data = db.fetch_one("SELECT dev_knowhow FROM companies WHERE id = ?", (company_id,))
                 total_dev_power = caps['development']
                 if total_dev_power == 0: total_dev_power = 20 # 最低保証
 
@@ -923,6 +982,9 @@ class Simulation:
                 # ステータス確定
                 # 基準値: Concept 3.0, Efficiency 1.0
                 # 開発力が高いと、そこから上振れする
+                # 開発ノウハウによるボーナス
+                knowhow_bonus = company_data['dev_knowhow'] * gb.DEV_KNOWHOW_EFFECT if company_data else 0
+
                 quality_bonus = (total_dev_power - 40) / 100.0 # 40を基準に±
                 
                 # 開発の揺らぎ (Innovation/Bug): 予期せぬ成功や失敗
@@ -933,7 +995,7 @@ class Simulation:
                 base_concept = 3.0 * strat_mods['c_mod']
                 base_efficiency = 1.0 * strat_mods['e_mod']
                 
-                final_concept = min(5.0, max(1.0, base_concept + quality_bonus + innovation_luck))
+                final_concept = min(5.0, max(1.0, base_concept + quality_bonus + knowhow_bonus + innovation_luck))
                 final_efficiency = min(2.0, max(0.5, base_efficiency + (quality_bonus * 0.5) + efficiency_luck))
                 
                 # 価格決定 (原価積み上げ + 利益)
@@ -948,7 +1010,7 @@ class Simulation:
                 
                 # メーカー希望小売価格 (MSRP): 原価 + 利益 + マージン
                 # 原価の約2倍程度を定価とする
-                sales_price = base_price
+                sales_price = max(1, base_price) # 0円防止
 
                 with db.transaction() as conn:
                     cursor = conn.cursor()
@@ -957,12 +1019,21 @@ class Simulation:
                         SET status = 'completed', concept_score = ?, production_efficiency = ?, base_price = ?, sales_price = ?
                         WHERE id = ?
                     """, (final_concept, final_efficiency, base_price, sales_price, proj['id']))
+
+                    # 開発ノウハウの蓄積
+                    cursor.execute("UPDATE companies SET dev_knowhow = dev_knowhow + ? WHERE id = ?", (gb.DEV_KNOWHOW_GAIN, company_id))
                     
                     cursor.execute("INSERT INTO news_logs (week, company_id, message, type) VALUES (?, ?, ?, ?)",
                                    (week, company_id, f"新製品 '{proj['name']}' の開発が完了しました。", 'info'))
             
                 db.log_file_event(week, company_id, "Development Complete", f"Completed {proj['name']}")
                 db.increment_weekly_stat(week, company_id, 'development_completed', 1)
+
+    def process_product_obsolescence(self, week):
+        """
+        既存製品の陳腐化: 毎週少しずつコンセプトスコアを減衰させる
+        """
+        db.execute_query(f"UPDATE product_designs SET concept_score = concept_score * {gb.CONCEPT_DECAY_RATE} WHERE status = 'completed' AND concept_score > 1.0")
 
     def process_banking(self, week):
         """
@@ -1036,7 +1107,7 @@ class Simulation:
                         db.execute_query("UPDATE companies SET is_active = 0 WHERE id = ?", (comp['id'],))
                         
                         # 4. 新企業の設立
-                        new_name = f"New Corp {random.randint(100, 999)}"
+                        new_name = name_generator.generate_company_name(old_type)
                         initial_funds = gb.INITIAL_FUNDS_MAKER if old_type == 'npc_maker' else gb.INITIAL_FUNDS_RETAIL
                         
                         new_id = db.execute_query("INSERT INTO companies (name, type, funds) VALUES (?, ?, ?)", (new_name, old_type, initial_funds))

@@ -2,6 +2,81 @@
 {% extends "base.html" %}
 
 {% block content %}
+<div class="card" style="margin-bottom: 20px;">
+    <div class="card-header">
+        <h2>企業能力レポート</h2>
+    </div>
+    <div class="card-body">
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 15px;">
+            <div style="text-align: center; padding: 10px; background: var(--bg-header); border-radius: 8px; border: 1px solid var(--border-color);">
+                <div style="font-size: 0.85em; color: var(--text-muted); margin-bottom: 5px;">組織安定性 (勤勉さ平均)</div>
+                <div style="font-size: 1.4em; font-weight: bold; color: var(--text-main);">{{ caps.stability|int }}</div>
+            </div>
+        </div>
+
+        <div style="margin-top: 20px;">
+            {% set stats = [
+                ('生産', 'production', 'production'),
+                ('開発', 'development', 'development'),
+                ('営業', 'sales', 'sales'),
+                ('店舗', 'store_ops', 'store'),
+                ('人事', 'hr', 'hr'),
+                ('広報', 'pr', 'pr'),
+                ('経理', 'accounting', 'accounting')
+            ] %}
+            <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 15px;">
+                {% for label, cap_key, dept_key in stats %}
+                <div style="background: var(--bg-header); border: 1px solid var(--border-color); border-radius: 8px; padding: 15px; box-shadow: 0 2px 4px rgba(0,0,0,0.2);">
+                    <h3 style="margin: 0 0 12px 0; font-size: 1.1em; color: var(--text-main); border-bottom: 2px solid var(--border-color); padding-bottom: 8px;">{{ label }}</h3>
+                    
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 8px; align-items: center;">
+                        <span style="color: var(--text-muted); font-size: 0.9em;">能力値</span>
+                        <span style="font-weight: bold; font-size: 1.2em; color: #4db8ff;">{{ caps[cap_key]|int }}</span>
+                    </div>
+                    
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 8px; align-items: center;">
+                        <span style="color: var(--text-muted); font-size: 0.9em;">Capacity</span>
+                        <span style="font-weight: bold; color: var(--text-main);">{{ caps[cap_key + '_capacity']|int }}</span>
+                    </div>
+                    
+                    <div style="background: rgba(0,0,0,0.2); padding: 8px; border-radius: 4px; margin-top: 10px;">
+                        <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
+                            <span style="color: var(--text-muted); font-size: 0.85em;">人数</span>
+                            <span style="font-weight: bold; color: var(--text-main);">{{ dept_stats[dept_key].count }}名</span>
+                        </div>
+                        <div style="display: flex; justify-content: space-between;">
+                            <span style="color: var(--text-muted); font-size: 0.85em;">Space</span>
+                            <span style="color: var(--text-main);">{{ dept_stats[dept_key].space }}</span>
+                        </div>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+        
+        <!-- 施設稼働状況 -->
+        <div style="margin-top: 15px; border-top: 1px solid var(--border-color); padding-top: 10px;">
+            <h4 style="margin-bottom: 10px; font-size: 1em; color: var(--text-muted);">施設稼働状況 <span style="font-size: 0.8em; font-weight: normal;">(NPC 1名につき {{ npc_scale }} 人分のスペースを使用)</span></h4>
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 15px;">
+                {% for key, fac in caps.facilities.items() %}
+                <div style="padding: 10px; border-radius: 8px; border: 1px solid {{ 'var(--accent-pink)' if fac.usage > fac.limit else 'var(--border-color)' }}; background: {{ 'rgba(233, 69, 96, 0.1)' if fac.usage > fac.limit else 'var(--bg-header)' }};">
+                    <div style="font-weight: bold; color: var(--text-main);">{{ fac.name }}</div>
+                    <div style="font-size: 0.9em; color: var(--text-main);">
+                        使用: {{ fac.usage }} (NPC:{{ fac.npc_count }}名) / {{ fac.limit }}
+                        {% if fac.usage > fac.limit %}
+                        <span style="color: var(--accent-pink); font-weight: bold;">(Over)</span>
+                        {% endif %}
+                    </div>
+                    <div style="font-size: 0.8em; color: var(--text-muted);">
+                        効率: {{ (fac.efficiency * 100)|int }}%
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+</div>
+
 <div class="sub-nav">
     <a href="#" class="sub-nav-item active" onclick="switchTab('employees')">従業員</a>
     <a href="#" class="sub-nav-item" onclick="switchTab('candidates')">採用候補</a>
@@ -18,6 +93,50 @@
 
 <!-- 従業員リスト -->
 <div id="tab-employees" class="tab-content active">
+    <!-- 役員リスト -->
+    <h3 style="margin-bottom: 10px; color: #d0d0ff;">役員 (Executives)</h3>
+    <div class="table-container" style="margin-bottom: 30px;">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th style="width: 30px;" class="no-sort"></th>
+                    <th>管掌 (Dept)</th>
+                    <th>役職</th>
+                    <th>氏名</th>
+                    <th>年齢</th>
+                    <th>給与</th>
+                    <th>忠誠度</th>
+                    <th>マネジメント</th>
+                    <th>役員適正</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for emp in employees if emp.role in ['ceo', 'cxo'] %}
+                <tr onclick="selectRow(this, '{{ emp.id }}', '{{ emp.name }}', '{{ emp.department }}', '{{ emp.role }}', '{{ emp.salary }}')">
+                    <td><input type="radio" name="selected_emp" value="{{ emp.id }}"></td>
+                    <td>{{ emp.department }}</td>
+                    <td>{{ emp.role }}</td>
+                    <td>{{ emp.name }}</td>
+                    <td>{{ emp.age }}</td>
+                    <td data-value="{{ emp.salary }}">¥{{ "{:,.2f}M".format(emp.salary / 1000000) }}</td>
+                    <td data-value="{{ emp.loyalty }}">
+                        <div class="bar-container">
+                            <div class="bar-fill" style="width: {{ emp.loyalty }}%; background-color: {{ '#e94560' if emp.loyalty < 40 else '#0f3460' }};"></div>
+                            <span class="bar-text">{{ emp.loyalty|int }}</span>
+                        </div>
+                    </td>
+                    <td data-value="{{ emp.management | perceived_value(hr_power) }}">{{ emp.management | ability_range(hr_power) }}</td>
+                    <td data-value="{{ emp.executive | perceived_value(hr_power) }}">{{ emp.executive | ability_range(hr_power) }}</td>
+                </tr>
+                {% else %}
+                <tr><td colspan="9">役員はいません。</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    <!-- 一般従業員リスト -->
+    <h3 style="margin-bottom: 10px; color: #d0d0ff;">従業員 (Employees)</h3>
     <div class="table-container">
         <table class="data-table">
             <thead>
@@ -26,29 +145,31 @@
                     <th class="sortable" onclick="sortTable(this, 1)">配属</th>
                     <th class="sortable" onclick="sortTable(this, 2)">役職</th>
                     <th class="sortable" onclick="sortTable(this, 3)">氏名</th>
-                    <th class="sortable" onclick="sortTable(this, 4, 'number')">給与</th>
-                    <th class="sortable" onclick="sortTable(this, 5, 'number')">忠誠度</th>
-                    <th class="sortable" onclick="sortTable(this, 6, 'number')">勤勉さ</th>
-                    <th class="sortable" onclick="sortTable(this, 7, 'number')">適応力</th>
-                    <th class="sortable" onclick="sortTable(this, 8, 'number')">生産力</th>
-                    <th class="sortable" onclick="sortTable(this, 9, 'number')">店舗</th>
-                    <th class="sortable" onclick="sortTable(this, 10, 'number')">営業</th>
-                    <th class="sortable" onclick="sortTable(this, 11, 'number')">人事</th>
-                    <th class="sortable" onclick="sortTable(this, 12, 'number')">開発</th>
-                    <th class="sortable" onclick="sortTable(this, 13, 'number')">広報</th>
-                    <th class="sortable" onclick="sortTable(this, 14, 'number')">経理</th>
-                    <th class="sortable" onclick="sortTable(this, 15, 'number')">マネジ</th>
-                    <th class="sortable" onclick="sortTable(this, 16, 'number')">業界</th>
-                    <th class="sortable" onclick="sortTable(this, 17, 'number')">役員</th>
+                    <th class="sortable" onclick="sortTable(this, 4, 'number')">年齢</th>
+                    <th class="sortable" onclick="sortTable(this, 5, 'number')">給与</th>
+                    <th class="sortable" onclick="sortTable(this, 6, 'number')">忠誠度</th>
+                    <th class="sortable" onclick="sortTable(this, 7, 'number')">勤勉さ</th>
+                    <th class="sortable" onclick="sortTable(this, 8, 'number')">適応力</th>
+                    <th class="sortable" onclick="sortTable(this, 9, 'number')">生産力</th>
+                    <th class="sortable" onclick="sortTable(this, 10, 'number')">店舗</th>
+                    <th class="sortable" onclick="sortTable(this, 11, 'number')">営業</th>
+                    <th class="sortable" onclick="sortTable(this, 12, 'number')">人事</th>
+                    <th class="sortable" onclick="sortTable(this, 13, 'number')">開発</th>
+                    <th class="sortable" onclick="sortTable(this, 14, 'number')">広報</th>
+                    <th class="sortable" onclick="sortTable(this, 15, 'number')">経理</th>
+                    <th class="sortable" onclick="sortTable(this, 16, 'number')">マネジ</th>
+                    <th class="sortable" onclick="sortTable(this, 17, 'number')">業界</th>
+                    <th class="sortable" onclick="sortTable(this, 18, 'number')">役員</th>
                 </tr>
             </thead>
             <tbody>
-                {% for emp in employees %}
+                {% for emp in employees if emp.role not in ['ceo', 'cxo'] %}
                 <tr onclick="selectRow(this, '{{ emp.id }}', '{{ emp.name }}', '{{ emp.department }}', '{{ emp.role }}', '{{ emp.salary }}')">
                     <td><input type="radio" name="selected_emp" value="{{ emp.id }}"></td>
                     <td>{{ emp.department }}</td>
                     <td>{{ emp.role }}</td>
                     <td>{{ emp.name }}</td>
+                    <td>{{ emp.age }}</td>
                     <td data-value="{{ emp.salary }}">¥{{ "{:,.2f}M".format(emp.salary / 1000000) }}</td>
                     <td data-value="{{ emp.loyalty }}">
                         <div class="bar-container">
@@ -56,18 +177,18 @@
                             <span class="bar-text">{{ emp.loyalty|int }}</span>
                         </div>
                     </td>
-                    <td data-value="{{ emp.diligence }}">{{ emp.diligence | ability_range(hr_power) }}</td>
-                    <td data-value="{{ emp.adaptability }}">{{ emp.adaptability | ability_range(hr_power) }}</td>
-                    <td data-value="{{ emp.production }}">{{ emp.production | ability_range(hr_power) }}</td>
-                    <td data-value="{{ emp.store_ops }}">{{ emp.store_ops | ability_range(hr_power) }}</td>
-                    <td data-value="{{ emp.sales }}">{{ emp.sales | ability_range(hr_power) }}</td>
-                    <td data-value="{{ emp.hr }}">{{ emp.hr | ability_range(hr_power) }}</td>
-                    <td data-value="{{ emp.development }}">{{ emp.development | ability_range(hr_power) }}</td>
-                    <td data-value="{{ emp.pr }}">{{ emp.pr | ability_range(hr_power) }}</td>
-                    <td data-value="{{ emp.accounting }}">{{ emp.accounting | ability_range(hr_power) }}</td>
-                    <td data-value="{{ emp.management }}">{{ emp.management | ability_range(hr_power) }}</td>
+                    <td data-value="{{ emp.diligence | perceived_value(hr_power) }}">{{ emp.diligence | ability_range(hr_power) }}</td>
+                    <td data-value="{{ emp.adaptability | perceived_value(hr_power) }}">{{ emp.adaptability | ability_range(hr_power) }}</td>
+                    <td data-value="{{ emp.production | perceived_value(hr_power) }}">{{ emp.production | ability_range(hr_power) }}</td>
+                    <td data-value="{{ emp.store_ops | perceived_value(hr_power) }}">{{ emp.store_ops | ability_range(hr_power) }}</td>
+                    <td data-value="{{ emp.sales | perceived_value(hr_power) }}">{{ emp.sales | ability_range(hr_power) }}</td>
+                    <td data-value="{{ emp.hr | perceived_value(hr_power) }}">{{ emp.hr | ability_range(hr_power) }}</td>
+                    <td data-value="{{ emp.development | perceived_value(hr_power) }}">{{ emp.development | ability_range(hr_power) }}</td>
+                    <td data-value="{{ emp.pr | perceived_value(hr_power) }}">{{ emp.pr | ability_range(hr_power) }}</td>
+                    <td data-value="{{ emp.accounting | perceived_value(hr_power) }}">{{ emp.accounting | ability_range(hr_power) }}</td>
+                    <td data-value="{{ emp.management | perceived_value(hr_power) }}">{{ emp.management | ability_range(hr_power) }}</td>
                     <td data-value="{{ emp.industry_aptitude }}">{{ emp.industry_aptitude|round(1) }}</td>
-                    <td data-value="{{ emp.executive }}">{{ emp.executive | ability_range(hr_power) }}</td>
+                    <td data-value="{{ emp.executive | perceived_value(hr_power) }}">{{ emp.executive | ability_range(hr_power) }}</td>
                 </tr>
                 {% endfor %}
             </tbody>
@@ -77,22 +198,52 @@
 
 <!-- 採用候補リスト -->
 <div id="tab-candidates" class="tab-content">
+    {% if offers %}
+    <div style="margin-bottom: 20px;">
+        <h3 style="margin-bottom: 10px;">交渉中 (オファー済み)</h3>
+        <table class="data-table" style="background-color: rgba(255,255,255,0.05);">
+            <thead>
+                <tr>
+                    <th>氏名</th>
+                    <th>年齢</th>
+                    <th>提示年収</th>
+                    <th>配属予定</th>
+                    <th>ステータス</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for offer in offers %}
+                <tr>
+                    <td>{{ offer.name }}</td>
+                    <td>{{ offer.age }}</td>
+                    <td>¥{{ "{:,.2f}M".format(offer.offer_salary / 1000000) }}</td>
+                    <td>{{ offer.target_dept }}</td>
+                    <td><span style="color: #4db8ff; font-weight: bold;">回答待ち</span></td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    <hr style="margin: 20px 0; border: 0; border-top: 1px solid var(--border-color);">
+    {% endif %}
+
     <div class="table-container">
         <table class="data-table">
             <thead>
                 <tr>
                     <th class="sortable" onclick="sortTable(this, 0)">氏名</th>
-                    <th class="sortable" onclick="sortTable(this, 1, 'number')">希望給与</th>
-                    <th class="sortable" onclick="sortTable(this, 2, 'number')">勤勉さ</th>
-                    <th class="sortable" onclick="sortTable(this, 3, 'number')">適応力</th>
-                    <th class="sortable" onclick="sortTable(this, 4, 'number')">生産力</th>
-                    <th class="sortable" onclick="sortTable(this, 5, 'number')">店舗</th>
-                    <th class="sortable" onclick="sortTable(this, 6, 'number')">営業</th>
-                    <th class="sortable" onclick="sortTable(this, 7, 'number')">人事</th>
-                    <th class="sortable" onclick="sortTable(this, 8, 'number')">開発</th>
-                    <th class="sortable" onclick="sortTable(this, 9, 'number')">広報</th>
-                    <th class="sortable" onclick="sortTable(this, 10, 'number')">経理</th>
-                    <th class="sortable" onclick="sortTable(this, 11, 'number')">マネジ</th>
+                    <th class="sortable" onclick="sortTable(this, 1, 'number')">年齢</th>
+                    <th class="sortable" onclick="sortTable(this, 2, 'number')">希望給与</th>
+                    <th class="sortable" onclick="sortTable(this, 3, 'number')">勤勉さ</th>
+                    <th class="sortable" onclick="sortTable(this, 4, 'number')">適応力</th>
+                    <th class="sortable" onclick="sortTable(this, 5, 'number')">生産力</th>
+                    <th class="sortable" onclick="sortTable(this, 6, 'number')">店舗</th>
+                    <th class="sortable" onclick="sortTable(this, 7, 'number')">営業</th>
+                    <th class="sortable" onclick="sortTable(this, 8, 'number')">人事</th>
+                    <th class="sortable" onclick="sortTable(this, 9, 'number')">開発</th>
+                    <th class="sortable" onclick="sortTable(this, 10, 'number')">広報</th>
+                    <th class="sortable" onclick="sortTable(this, 11, 'number')">経理</th>
+                    <th class="sortable" onclick="sortTable(this, 12, 'number')">マネジ</th>
                     <th class="no-sort">操作</th>
                 </tr>
             </thead>
@@ -100,24 +251,31 @@
                 {% for cand in candidates %}
                 <tr>
                     <td>{{ cand.name }}</td>
+                    <td>{{ cand.age }}</td>
                     <td data-value="{{ cand.desired_salary }}">¥{{ "{:,.2f}M".format(cand.desired_salary / 1000000) }}</td>
-                    <td data-value="{{ cand.diligence }}">{{ cand.diligence | ability_range(hr_power) }}</td>
-                    <td data-value="{{ cand.adaptability }}">{{ cand.adaptability | ability_range(hr_power) }}</td>
-                    <td data-value="{{ cand.production }}">{{ cand.production | ability_range(hr_power) }}</td>
-                    <td data-value="{{ cand.store_ops }}">{{ cand.store_ops | ability_range(hr_power) }}</td>
-                    <td data-value="{{ cand.sales }}">{{ cand.sales | ability_range(hr_power) }}</td>
-                    <td data-value="{{ cand.hr }}">{{ cand.hr | ability_range(hr_power) }}</td>
-                    <td data-value="{{ cand.development }}">{{ cand.development | ability_range(hr_power) }}</td>
-                    <td data-value="{{ cand.pr }}">{{ cand.pr | ability_range(hr_power) }}</td>
-                    <td data-value="{{ cand.accounting }}">{{ cand.accounting | ability_range(hr_power) }}</td>
-                    <td data-value="{{ cand.management }}">{{ cand.management | ability_range(hr_power) }}</td>
+                    <td data-value="{{ cand.diligence | perceived_value(hr_power) }}">{{ cand.diligence | ability_range(hr_power) }}</td>
+                    <td data-value="{{ cand.adaptability | perceived_value(hr_power) }}">{{ cand.adaptability | ability_range(hr_power) }}</td>
+                    <td data-value="{{ cand.production | perceived_value(hr_power) }}">{{ cand.production | ability_range(hr_power) }}</td>
+                    <td data-value="{{ cand.store_ops | perceived_value(hr_power) }}">{{ cand.store_ops | ability_range(hr_power) }}</td>
+                    <td data-value="{{ cand.sales | perceived_value(hr_power) }}">{{ cand.sales | ability_range(hr_power) }}</td>
+                    <td data-value="{{ cand.hr | perceived_value(hr_power) }}">{{ cand.hr | ability_range(hr_power) }}</td>
+                    <td data-value="{{ cand.development | perceived_value(hr_power) }}">{{ cand.development | ability_range(hr_power) }}</td>
+                    <td data-value="{{ cand.pr | perceived_value(hr_power) }}">{{ cand.pr | ability_range(hr_power) }}</td>
+                    <td data-value="{{ cand.accounting | perceived_value(hr_power) }}">{{ cand.accounting | ability_range(hr_power) }}</td>
+                    <td data-value="{{ cand.management | perceived_value(hr_power) }}">{{ cand.management | ability_range(hr_power) }}</td>
                     <td>
-                        <form action="{{ url_for('hr_hire') }}" method="post" style="display:inline;">
-                            <input type="hidden" name="npc_id" value="{{ cand.id }}">
-                            <input type="hidden" name="offer_salary" value="{{ cand.desired_salary }}">
-                            <input type="hidden" name="target_dept" value="production"> <!-- 仮 -->
-                            <button type="submit" class="btn btn-small btn-primary">オファー</button>
-                        </form>
+                        {% if cand.id in offered_npc_ids %}
+                            <button class="btn btn-small btn-secondary" disabled style="opacity: 0.6; cursor: not-allowed;">オファー済</button>
+                        {% else %}
+                            <form action="{{ url_for('hr_hire') }}" method="post" style="display:flex; align-items: center; gap: 5px;">
+                                <input type="hidden" name="npc_id" value="{{ cand.id }}">
+                                <input type="hidden" name="offer_salary" value="{{ cand.desired_salary }}">
+                                <select name="target_dept" class="form-control" style="padding: 4px; width: auto; font-size: 12px;">
+                                    {% for dept in departments %}<option value="{{ dept }}">{{ dept }}</option>{% endfor %}
+                                </select>
+                                <button type="submit" class="btn btn-small btn-primary">オファー</button>
+                            </form>
+                        {% endif %}
                     </td>
                 </tr>
                 {% endfor %}

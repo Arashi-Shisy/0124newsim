@@ -12,6 +12,7 @@
             <table class="data-table">
                 <thead>
                     <tr>
+                        <th>施設名</th>
                         <th>タイプ</th>
                         <th>規模 (収容人数)</th>
                         <th>賃料/週</th>
@@ -22,6 +23,7 @@
                 <tbody>
                     {% for fac in my_facilities %}
                     <tr>
+                        <td>{{ fac.name }}</td>
                         <td>{{ fac.type }}</td>
                         <td>{{ fac.size }}</td>
                         <td>¥{{ "{:,}".format(fac.rent) }}</td>
@@ -29,7 +31,7 @@
                         <td>{{ fac.access_score if fac.access_score else '-' }}</td>
                     </tr>
                     {% else %}
-                    <tr><td colspan="5">施設がありません。</td></tr>
+                    <tr><td colspan="6">施設がありません。</td></tr>
                     {% endfor %}
                 </tbody>
             </table>
@@ -45,6 +47,7 @@
             <table class="data-table">
                 <thead>
                     <tr>
+                        <th>施設名</th>
                         <th>タイプ</th>
                         <th>規模</th>
                         <th>賃料/週</th>
@@ -55,12 +58,16 @@
                 <tbody>
                     {% for fac in market_facilities %}
                     <tr>
+                        <td>{{ fac.name }}</td>
                         <td>{{ fac.type }}</td>
                         <td>{{ fac.size }}</td>
                         <td>¥{{ "{:,}".format(fac.rent) }}</td>
                         <td>{{ fac.access_score if fac.access_score else '-' }}</td>
                         <td>
-                            <button class="btn btn-small btn-secondary">契約 (未実装)</button>
+                            <form action="{{ url_for('facility_contract') }}" method="post">
+                                <input type="hidden" name="facility_id" value="{{ fac.id }}">
+                                <button type="submit" class="btn btn-small btn-primary">契約</button>
+                            </form>
                         </td>
                     </tr>
                     {% endfor %}
