@@ -1,0 +1,102 @@
+<!-- c:\0124newSIm\src\templates\detail_company.html -->
+{% extends "base.html" %}
+
+{% block content %}
+<div class="dashboard-grid">
+    <div class="card card-large">
+        <div class="card-header">
+            <h2>企業詳細: {{ comp.name }}</h2>
+        </div>
+        <div class="card-body">
+            <div class="stat-row">
+                <span class="label">タイプ</span>
+                <span class="value">{{ comp.type }}</span>
+            </div>
+            <div class="stat-row">
+                <span class="label">資金</span>
+                <span class="value">¥{{ "{:,}".format(comp.funds|int) }}</span>
+            </div>
+            <div class="stat-row">
+                <span class="label">ブランド力</span>
+                <span class="value">{{ comp.brand_power|int }}</span>
+            </div>
+            <div class="stat-row">
+                <span class="label">信用格付け</span>
+                <span class="value">{{ comp.credit_rating }}</span>
+            </div>
+            <div class="stat-row">
+                <span class="label">従業員数</span>
+                <span class="value">{{ emp_count }} 名</span>
+            </div>
+            <div class="stat-row">
+                <span class="label">CEO</span>
+                <span class="value">
+                    {% if ceo %}
+                    <a href="{{ url_for('npc_detail', npc_id=ceo.id) }}" style="color: #4db8ff;">{{ ceo.name }}</a> ({{ ceo.age }}歳)
+                    {% else %}
+                    不在
+                    {% endif %}
+                </span>
+            </div>
+        </div>
+    </div>
+
+    {% if stats %}
+    <div class="card">
+        <div class="card-header">
+            <h2>直近の業績 (Week {{ stats.week }})</h2>
+        </div>
+        <div class="card-body">
+            <div class="stat-row">
+                <span class="label">売上高</span>
+                <span class="value">¥{{ "{:,}".format(stats.total_revenue|int) }}</span>
+            </div>
+            <div class="stat-row">
+                <span class="label">費用計</span>
+                <span class="value">¥{{ "{:,}".format(stats.total_expenses|int) }}</span>
+            </div>
+            <div class="stat-row">
+                <span class="label">収支</span>
+                <span class="value" style="color: {{ '#4db8ff' if (stats.total_revenue - stats.total_expenses) >= 0 else '#e94560' }};">
+                    ¥{{ "{:,}".format((stats.total_revenue - stats.total_expenses)|int) }}
+                </span>
+            </div>
+            <div class="stat-row">
+                <span class="label">フェーズ</span>
+                <span class="value">{{ stats.phase }}</span>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
+    <div class="card card-large">
+        <div class="card-header">
+            <h2>製品ラインナップ</h2>
+        </div>
+        <div class="card-body">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>製品名</th>
+                        <th>コンセプト</th>
+                        <th>価格</th>
+                        <th>認知度</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for p in products %}
+                    <tr>
+                        <td><a href="{{ url_for('product_detail', design_id=p.id) }}" style="color: #4db8ff;">{{ p.name }}</a></td>
+                        <td>{{ "{:.2f}".format(p.concept_score) }}</td>
+                        <td>¥{{ "{:,}".format(p.sales_price) }}</td>
+                        <td>{{ "{:.1f}".format(p.awareness) }}</td>
+                    </tr>
+                    {% else %}
+                    <tr><td colspan="4">製品がありません。</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}

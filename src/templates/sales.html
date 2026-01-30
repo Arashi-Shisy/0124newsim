@@ -14,18 +14,26 @@
                     <tr>
                         <th>製品名</th>
                         <th>在庫数</th>
-                        <th>販売価格</th>
+                        <th>販売価格 (MSRP)</th>
+                        <th>操作</th>
                     </tr>
                 </thead>
                 <tbody>
                     {% for item in my_inventory %}
                     <tr>
-                        <td>{{ item.product_name }}</td>
+                        <td><a href="{{ url_for('product_detail', design_id=item.design_id) }}" style="color: #4db8ff;">{{ item.product_name }}</a></td>
                         <td>{{ "{:,}".format(item.quantity) }}</td>
                         <td>¥{{ "{:,}".format(item.sales_price) }}</td>
+                        <td>
+                            <form action="{{ url_for('sales_pricing') }}" method="post" style="display: flex; gap: 5px;">
+                                <input type="hidden" name="design_id" value="{{ item.design_id }}"> <!-- inventoryテーブルにはdesign_idがある前提 -->
+                                <input type="number" name="new_price" class="form-control" style="width: 100px; padding: 4px;" placeholder="新価格" value="{{ item.sales_price }}">
+                                <button type="submit" class="btn btn-small btn-secondary">改定</button>
+                            </form>
+                        </td>
                     </tr>
                     {% else %}
-                    <tr><td colspan="3">在庫がありません。</td></tr>
+                    <tr><td colspan="4">在庫がありません。</td></tr>
                     {% endfor %}
                 </tbody>
             </table>
@@ -51,8 +59,8 @@
                 <tbody>
                     {% for order in pending_orders %}
                     <tr>
-                        <td>{{ order.buyer_name }}</td>
-                        <td>{{ order.product_name }}</td>
+                        <td><a href="{{ url_for('company_detail', company_id=order.buyer_id) }}" style="color: #4db8ff;">{{ order.buyer_name }}</a></td>
+                        <td><a href="{{ url_for('product_detail', design_id=order.design_id) }}" style="color: #4db8ff;">{{ order.product_name }}</a></td>
                         <td>{{ order.quantity }}</td>
                         <td>¥{{ "{:,}".format(order.amount) }}</td>
                         <td>
@@ -91,8 +99,8 @@
                     {% for item in history %}
                     <tr>
                         <td>{{ item.week | format_week }}</td>
-                        <td>{{ item.partner_name }}</td>
-                        <td>{{ item.product_name }}</td>
+                        <td>{{ item.partner_name }}</td> <!-- ID取得が複雑なため今回はテキストのまま -->
+                        <td><a href="{{ url_for('product_detail', design_id=item.design_id) }}" style="color: #4db8ff;">{{ item.product_name }}</a></td>
                         <td>{{ item.quantity }}</td>
                         <td>¥{{ "{:,}".format(item.amount) }}</td>
                     </tr>

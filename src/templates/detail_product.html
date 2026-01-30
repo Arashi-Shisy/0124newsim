@@ -1,0 +1,85 @@
+<!-- c:\0124newSIm\src\templates\detail_product.html -->
+{% extends "base.html" %}
+
+{% block content %}
+<div class="dashboard-grid">
+    <div class="card card-large">
+        <div class="card-header">
+            <h2>製品詳細: {{ product.name }}</h2>
+        </div>
+        <div class="card-body">
+            <div class="stat-row">
+                <span class="label">メーカー</span>
+                <span class="value"><a href="{{ url_for('company_detail', company_id=product.maker_id) }}" style="color: #4db8ff;">{{ product.maker_name }}</a></span>
+            </div>
+            <div class="stat-row">
+                <span class="label">開発完了</span>
+                <span class="value">{{ product.developed_week | format_week }}</span>
+            </div>
+            <div class="stat-row">
+                <span class="label">開発方針</span>
+                <span class="value">{{ product.strategy }}</span>
+            </div>
+            <div class="stat-row">
+                <span class="label">販売価格 (MSRP)</span>
+                <span class="value">¥{{ "{:,}".format(product.sales_price) }}</span>
+            </div>
+            <div class="stat-row">
+                <span class="label">基準価格 (価値)</span>
+                <span class="value">¥{{ "{:,}".format(product.base_price) }}</span>
+            </div>
+            
+            <hr style="border-color: var(--border-color); margin: 15px 0;">
+            
+            <div class="stat-row">
+                <span class="label">コンセプトスコア</span>
+                <span class="value">{{ "{:.2f}".format(product.concept_score) }}</span>
+            </div>
+            <div class="stat-row">
+                <span class="label">材料品質スコア</span>
+                <span class="value">{{ "{:.2f}".format(product.material_score) }}</span>
+            </div>
+            <div class="stat-row">
+                <span class="label">生産効率</span>
+                <span class="value">{{ "{:.2f}".format(product.production_efficiency) }}</span>
+            </div>
+            <div class="stat-row">
+                <span class="label">認知度</span>
+                <span class="value">{{ "{:.1f}".format(product.awareness) }}</span>
+            </div>
+        </div>
+    </div>
+
+    <div class="card card-large">
+        <div class="card-header">
+            <h2>パーツ構成・原価</h2>
+        </div>
+        <div class="card-body">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>パーツ</th>
+                        <th>サプライヤー</th>
+                        <th>品質スコア</th>
+                        <th>コスト</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for part in parts_details %}
+                    <tr>
+                        <td>{{ part.key }}</td>
+                        <td><a href="#" style="color: #aaa; pointer-events: none;">{{ part.supplier_name }}</a></td>
+                        <td>{{ "{:.2f}".format(part.score) }}</td>
+                        <td>¥{{ "{:,}".format(part.cost) }}</td>
+                    </tr>
+                    {% endfor %}
+                    <tr style="font-weight: bold; border-top: 2px solid var(--border-color);">
+                        <td colspan="3">合計原価 (材料費)</td>
+                        <td>¥{{ "{:,}".format(total_cost) }}</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}

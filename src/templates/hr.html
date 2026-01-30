@@ -15,7 +15,7 @@
         </div>
 
         <div style="margin-top: 20px;">
-            {% set stats = [
+            {% set hr_stats_list = [
                 ('生産', 'production', 'production'),
                 ('開発', 'development', 'development'),
                 ('営業', 'sales', 'sales'),
@@ -25,7 +25,7 @@
                 ('経理', 'accounting', 'accounting')
             ] %}
             <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 15px;">
-                {% for label, cap_key, dept_key in stats %}
+                {% for label, cap_key, dept_key in hr_stats_list %}
                 <div style="background: var(--bg-header); border: 1px solid var(--border-color); border-radius: 8px; padding: 15px; box-shadow: 0 2px 4px rgba(0,0,0,0.2);">
                     <h3 style="margin: 0 0 12px 0; font-size: 1.1em; color: var(--text-main); border-bottom: 2px solid var(--border-color); padding-bottom: 8px;">{{ label }}</h3>
                     
@@ -93,6 +93,23 @@
 
 <!-- 従業員リスト -->
 <div id="tab-employees" class="tab-content active">
+    <!-- 従業員フィルタ -->
+    <div class="filter-container" style="background: rgba(255,255,255,0.05); padding: 10px; border-radius: 4px; margin-bottom: 15px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+        <span style="font-weight: bold; color: var(--text-muted);">絞り込み:</span>
+        <select id="emp-filter-dept" class="form-control" style="width: auto; padding: 4px; font-size: 13px;" onchange="filterEmployees()">
+            <option value="">全部署</option>
+            {% for dept in departments %}<option value="{{ dept }}">{{ dept }}</option>{% endfor %}
+        </select>
+        <select id="emp-filter-role" class="form-control" style="width: auto; padding: 4px; font-size: 13px;" onchange="filterEmployees()">
+            <option value="">全役職</option>
+            <option value="member">メンバー</option>
+            <option value="assistant_manager">部長補佐</option>
+            <option value="manager">部長</option>
+            <option value="cxo">CxO</option>
+        </select>
+        <input type="text" id="emp-filter-name" class="form-control" style="width: 150px; padding: 4px; font-size: 13px;" placeholder="氏名検索" onkeyup="filterEmployees()">
+    </div>
+
     <!-- 役員リスト -->
     <h3 style="margin-bottom: 10px; color: #d0d0ff;">役員 (Executives)</h3>
     <div class="table-container" style="margin-bottom: 30px;">
@@ -112,11 +129,11 @@
             </thead>
             <tbody>
                 {% for emp in employees if emp.role in ['ceo', 'cxo'] %}
-                <tr onclick="selectRow(this, '{{ emp.id }}', '{{ emp.name }}', '{{ emp.department }}', '{{ emp.role }}', '{{ emp.salary }}')">
+                <tr onclick="selectRow(this, '{{ emp.id }}', '{{ emp.name }}', '{{ emp.department }}', '{{ emp.role }}', '{{ emp.salary }}')" data-dept="{{ emp.department }}" data-role="{{ emp.role }}" data-name="{{ emp.name }}">
                     <td><input type="radio" name="selected_emp" value="{{ emp.id }}"></td>
                     <td>{{ emp.department }}</td>
                     <td>{{ emp.role }}</td>
-                    <td>{{ emp.name }}</td>
+                    <td><a href="{{ url_for('npc_detail', npc_id=emp.id) }}" style="color: #4db8ff; font-weight: bold;" onclick="event.stopPropagation()">{{ emp.name }}</a></td>
                     <td>{{ emp.age }}</td>
                     <td data-value="{{ emp.salary }}">¥{{ "{:,.2f}M".format(emp.salary / 1000000) }}</td>
                     <td data-value="{{ emp.loyalty }}">
@@ -164,11 +181,11 @@
             </thead>
             <tbody>
                 {% for emp in employees if emp.role not in ['ceo', 'cxo'] %}
-                <tr onclick="selectRow(this, '{{ emp.id }}', '{{ emp.name }}', '{{ emp.department }}', '{{ emp.role }}', '{{ emp.salary }}')">
+                <tr onclick="selectRow(this, '{{ emp.id }}', '{{ emp.name }}', '{{ emp.department }}', '{{ emp.role }}', '{{ emp.salary }}')" data-dept="{{ emp.department }}" data-role="{{ emp.role }}" data-name="{{ emp.name }}">
                     <td><input type="radio" name="selected_emp" value="{{ emp.id }}"></td>
                     <td>{{ emp.department }}</td>
                     <td>{{ emp.role }}</td>
-                    <td>{{ emp.name }}</td>
+                    <td><a href="{{ url_for('npc_detail', npc_id=emp.id) }}" style="color: #4db8ff; font-weight: bold;" onclick="event.stopPropagation()">{{ emp.name }}</a></td>
                     <td>{{ emp.age }}</td>
                     <td data-value="{{ emp.salary }}">¥{{ "{:,.2f}M".format(emp.salary / 1000000) }}</td>
                     <td data-value="{{ emp.loyalty }}">
@@ -214,7 +231,7 @@
             <tbody>
                 {% for offer in offers %}
                 <tr>
-                    <td>{{ offer.name }}</td>
+                    <td><a href="{{ url_for('npc_detail', npc_id=offer.npc_id) }}" style="color: #4db8ff;">{{ offer.name }}</a></td>
                     <td>{{ offer.age }}</td>
                     <td>¥{{ "{:,.2f}M".format(offer.offer_salary / 1000000) }}</td>
                     <td>{{ offer.target_dept }}</td>
@@ -227,30 +244,67 @@
     <hr style="margin: 20px 0; border: 0; border-top: 1px solid var(--border-color);">
     {% endif %}
 
+    <!-- 候補者フィルタ -->
+    <div class="filter-container" style="background: rgba(255,255,255,0.05); padding: 10px; border-radius: 4px; margin-bottom: 15px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+        <span style="font-weight: bold; color: var(--text-muted);">条件検索:</span>
+        <select id="cand-filter-stat" class="form-control" style="width: auto; padding: 4px; font-size: 13px;" onchange="filterCandidates()">
+            <option value="">能力値指定なし</option>
+            <option value="4">勤勉さ</option>
+            <option value="5">適応力</option>
+            <option value="6">生産力</option>
+            <option value="7">店舗運営</option>
+            <option value="8">営業力</option>
+            <option value="9">人事力</option>
+            <option value="10">開発力</option>
+            <option value="11">広報力</option>
+            <option value="12">経理力</option>
+            <option value="13">マネジメント</option>
+        </select>
+        <input type="number" id="cand-filter-stat-val" class="form-control" style="width: 70px; padding: 4px; font-size: 13px;" placeholder="以上" onkeyup="filterCandidates()" onchange="filterCandidates()">
+        
+        <span style="color: var(--text-muted); margin-left: 5px; font-size: 0.9em;">給与上限:</span>
+        <input type="number" id="cand-filter-salary" class="form-control" style="width: 80px; padding: 4px; font-size: 13px;" placeholder="万円" step="10" onkeyup="filterCandidates()" onchange="filterCandidates()">
+        
+        <span style="color: var(--text-muted); margin-left: 5px; font-size: 0.9em;">年齢上限:</span>
+        <input type="number" id="cand-filter-age" class="form-control" style="width: 60px; padding: 4px; font-size: 13px;" placeholder="歳" onkeyup="filterCandidates()" onchange="filterCandidates()">
+        
+        <input type="text" id="cand-filter-name" class="form-control" style="width: 120px; padding: 4px; font-size: 13px; margin-left: auto;" placeholder="氏名検索" onkeyup="filterCandidates()">
+    </div>
+
+    <div class="action-bar" style="margin-bottom: 10px; justify-content: flex-start;">
+        <button class="btn btn-primary" onclick="submitBulkOffers()">選択した候補者に一括オファー</button>
+    </div>
+
     <div class="table-container">
         <table class="data-table">
             <thead>
                 <tr>
-                    <th class="sortable" onclick="sortTable(this, 0)">氏名</th>
-                    <th class="sortable" onclick="sortTable(this, 1, 'number')">年齢</th>
-                    <th class="sortable" onclick="sortTable(this, 2, 'number')">希望給与</th>
-                    <th class="sortable" onclick="sortTable(this, 3, 'number')">勤勉さ</th>
-                    <th class="sortable" onclick="sortTable(this, 4, 'number')">適応力</th>
-                    <th class="sortable" onclick="sortTable(this, 5, 'number')">生産力</th>
-                    <th class="sortable" onclick="sortTable(this, 6, 'number')">店舗</th>
-                    <th class="sortable" onclick="sortTable(this, 7, 'number')">営業</th>
-                    <th class="sortable" onclick="sortTable(this, 8, 'number')">人事</th>
-                    <th class="sortable" onclick="sortTable(this, 9, 'number')">開発</th>
-                    <th class="sortable" onclick="sortTable(this, 10, 'number')">広報</th>
-                    <th class="sortable" onclick="sortTable(this, 11, 'number')">経理</th>
-                    <th class="sortable" onclick="sortTable(this, 12, 'number')">マネジ</th>
+                    <th class="no-sort" style="width: 30px; text-align: center;"><input type="checkbox" id="check-all" onclick="toggleAllCandidates(this)" style="cursor: pointer;"></th>
+                    <th class="sortable" onclick="sortTable(this, 1)">氏名</th>
+                    <th class="sortable" onclick="sortTable(this, 2, 'number')">年齢</th>
+                    <th class="sortable" onclick="sortTable(this, 3, 'number')">希望給与</th>
+                    <th class="sortable" onclick="sortTable(this, 4, 'number')">勤勉さ</th>
+                    <th class="sortable" onclick="sortTable(this, 5, 'number')">適応力</th>
+                    <th class="sortable" onclick="sortTable(this, 6, 'number')">生産力</th>
+                    <th class="sortable" onclick="sortTable(this, 7, 'number')">店舗</th>
+                    <th class="sortable" onclick="sortTable(this, 8, 'number')">営業</th>
+                    <th class="sortable" onclick="sortTable(this, 9, 'number')">人事</th>
+                    <th class="sortable" onclick="sortTable(this, 10, 'number')">開発</th>
+                    <th class="sortable" onclick="sortTable(this, 11, 'number')">広報</th>
+                    <th class="sortable" onclick="sortTable(this, 12, 'number')">経理</th>
+                    <th class="sortable" onclick="sortTable(this, 13, 'number')">マネジ</th>
                     <th class="no-sort">操作</th>
                 </tr>
             </thead>
             <tbody>
                 {% for cand in candidates %}
-                <tr>
-                    <td>{{ cand.name }}</td>
+                <tr data-name="{{ cand.name }}" data-salary="{{ cand.desired_salary }}">
+                    <td style="text-align: center;">
+                        {% if cand.id not in offered_npc_ids %}
+                        <input type="checkbox" class="offer-checkbox" value="{{ cand.id }}" style="cursor: pointer;">
+                        {% endif %}
+                    </td>
+                    <td><a href="{{ url_for('npc_detail', npc_id=cand.id) }}" style="color: #4db8ff;">{{ cand.name }}</a></td>
                     <td>{{ cand.age }}</td>
                     <td data-value="{{ cand.desired_salary }}">¥{{ "{:,.2f}M".format(cand.desired_salary / 1000000) }}</td>
                     <td data-value="{{ cand.diligence | perceived_value(hr_power) }}">{{ cand.diligence | ability_range_colored(hr_power) }}</td>
@@ -270,7 +324,7 @@
                             <form action="{{ url_for('hr_hire') }}" method="post" style="display:flex; align-items: center; gap: 5px;">
                                 <input type="hidden" name="npc_id" value="{{ cand.id }}">
                                 <input type="hidden" name="offer_salary" value="{{ cand.desired_salary }}">
-                                <select name="target_dept" class="form-control" style="padding: 4px; width: auto; font-size: 12px;">
+                                <select name="target_dept" class="form-control dept-select" style="padding: 4px; width: auto; font-size: 12px;">
                                     {% for dept in departments %}<option value="{{ dept }}">{{ dept }}</option>{% endfor %}
                                 </select>
                                 <button type="submit" class="btn btn-small btn-primary">オファー</button>
@@ -417,6 +471,109 @@
             document.body.appendChild(form);
             form.submit();
         }
+    }
+
+    function toggleAllCandidates(source) {
+        document.querySelectorAll('.offer-checkbox').forEach(cb => {
+            if(!cb.disabled) cb.checked = source.checked;
+        });
+    }
+
+    function submitBulkOffers() {
+        const selected = [];
+        document.querySelectorAll('.offer-checkbox:checked').forEach(cb => {
+            const row = cb.closest('tr');
+            const npcId = cb.value;
+            // 行内のhidden inputやselectから値を取得
+            const salaryInput = row.querySelector('input[name="offer_salary"]');
+            const deptInput = row.querySelector('.dept-select');
+            
+            if (salaryInput && deptInput) {
+                selected.push({
+                    npc_id: npcId, 
+                    offer_salary: salaryInput.value, 
+                    target_dept: deptInput.value
+                });
+            }
+        });
+        
+        if (selected.length === 0) return alert("候補者を選択してください");
+        
+        fetch("{{ url_for('hr_hire_bulk') }}", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({offers: selected})
+        }).then(res => res.json())
+          .then(data => {
+            if (data.status === 'success') {
+                window.location.reload();
+            }
+        });
+    }
+
+    // フィルタリング機能
+    function filterEmployees() {
+        const dept = document.getElementById('emp-filter-dept').value.toLowerCase();
+        const role = document.getElementById('emp-filter-role').value.toLowerCase();
+        const name = document.getElementById('emp-filter-name').value.toLowerCase();
+
+        const rows = document.querySelectorAll('#tab-employees tbody tr');
+        rows.forEach(row => {
+            if (!row.hasAttribute('data-name')) return; // データ行以外はスキップ
+
+            const rDept = row.getAttribute('data-dept').toLowerCase();
+            const rRole = row.getAttribute('data-role').toLowerCase();
+            const rName = row.getAttribute('data-name').toLowerCase();
+
+            let show = true;
+            if (dept && rDept !== dept) show = false;
+            if (role && rRole !== role) show = false;
+            if (name && !rName.includes(name)) show = false;
+
+            row.style.display = show ? '' : 'none';
+        });
+    }
+
+    function filterCandidates() {
+        const statIdx = document.getElementById('cand-filter-stat').value;
+        const statVal = parseFloat(document.getElementById('cand-filter-stat-val').value) || 0;
+        const salaryMax = parseFloat(document.getElementById('cand-filter-salary').value);
+        const ageMax = parseFloat(document.getElementById('cand-filter-age').value);
+        const name = document.getElementById('cand-filter-name').value.toLowerCase();
+
+        const rows = document.querySelectorAll('#tab-candidates tbody tr');
+        rows.forEach(row => {
+            if (!row.hasAttribute('data-name')) return;
+
+            let show = true;
+            const rName = row.getAttribute('data-name').toLowerCase();
+            if (name && !rName.includes(name)) show = false;
+
+            if (show && salaryMax) {
+                const rSalary = parseFloat(row.getAttribute('data-salary'));
+                if (rSalary > salaryMax * 10000) show = false;
+            }
+
+            if (show && ageMax) {
+                const ageCell = row.children[2]; // 年齢は3列目(インデックス2)
+                if (ageCell) {
+                    const age = parseFloat(ageCell.innerText);
+                    if (age > ageMax) show = false;
+                }
+            }
+
+            if (show && statIdx && statVal > 0) {
+                const cell = row.children[statIdx];
+                if (cell) {
+                    const val = parseFloat(cell.getAttribute('data-value')) || 0;
+                    if (val < statVal) show = false;
+                }
+            }
+
+            row.style.display = show ? '' : 'none';
+        });
     }
 
     function closeModal(modalId) {

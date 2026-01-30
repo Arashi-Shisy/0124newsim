@@ -153,6 +153,7 @@ def run_report():
                     "week": "週",
                     "company_id": "企業ID",
                     "company_name": "企業名",
+                    "phase": "フェーズ",
                     "total_revenue": "売上高",
                     "total_expenses": "費用計",
                     "profit": "収支", # 計算項目
@@ -192,6 +193,143 @@ def run_report():
             
     except Exception as e:
         print(f"Error exporting detailed report: {e}")
+
+    # P/L詳細レポート出力 (Company P/L Details)
+    pl_output_path = os.path.join(os.path.dirname(__file__), "..", "company_pl_details.csv")
+    print(f"Exporting P/L detailed report to {pl_output_path}...")
+
+    try:
+        # 企業名マップ
+        companies = db.fetch_all("SELECT id, name FROM companies")
+        company_map = {c['id']: c['name'] for c in companies}
+
+        # フェーズ情報の取得
+        phases = db.fetch_all("SELECT week, company_id, phase FROM weekly_stats")
+        phase_map = {(p['week'], p['company_id']): p['phase'] for p in phases}
+
+        # デバッグ: エントリ数確認
+        count = db.fetch_one("SELECT COUNT(*) as cnt FROM account_entries")['cnt']
+        print(f"Total account entries in DB: {count}")
+
+        # 全会計エントリ取得
+        entries = db.fetch_all("SELECT week, company_id, category, amount FROM account_entries WHERE week IS NOT NULL AND company_id IS NOT NULL")
+        print(f"Fetched {len(entries)} entries for P/L report.")
+        
+        # 集計
+        pl_data = {} # {week: {company_id: {category: amount}}}
+        
+        for e in entries:
+            w = e['week']
+            cid = e['company_id']
+            cat = e['category']
+            amt = e['amount'] or 0
+            
+            if w not in pl_data: pl_data[w] = {}
+            if cid not in pl_data[w]: pl_data[w][cid] = {}
+            
+            pl_data[w][cid][cat] = pl_data[w][cid].get(cat, 0) + amt
+            
+        with open(pl_output_path, 'w', newline='', encoding='utf-8-sig') as f:
+            # カラム定義
+            header_map = {
+                "week": "週", "company_id": "企業ID", "company_name": "企業名", "phase": "フェーズ",
+                "revenue": "売上高", 
+                "cogs": "売上原価", "cogs_ratio": "原価率",
+                "gross_profit": "売上総利益", "gross_profit_ratio": "粗利率",
+                "labor_total": "人件費計", "labor_ratio": "人件費率",
+                "rent_total": "地代家賃計", "rent_ratio": "家賃率",
+                "ad": "広告宣伝費", "ad_ratio": "広告費率",
+                "operating_profit": "営業利益", "operating_profit_ratio": "営業利益率",
+                "interest": "支払利息", "extraordinary_profit": "特別利益", 
+                "net_profit": "当期純利益", "net_profit_ratio": "純利益率",
+                "labor_production": "人件費(生産)", "labor_dev": "人件費(開発)", "labor_sales": "人件費(営業)", 
+                "labor_hr": "人件費(人事)", "labor_pr": "人件費(広報)", "labor_accounting": "人件費(経理)", "labor_store": "人件費(店舗)",
+                "rent_factory": "家賃(工場)", "rent_office": "家賃(オフィス)", "rent_store": "家賃(店舗)",
+                "material": "材料費(CF)", "stock_purchase": "商品仕入(CF)", "facility_purchase": "設備投資(CF)"
+            }
+            
+            # 出力するカラムの順序
+            field_order = [
+                "week", "company_id", "company_name", "phase",
+                "revenue", 
+                "cogs", "cogs_ratio",
+                "gross_profit", "gross_profit_ratio",
+                "labor_total", "labor_ratio",
+                "rent_total", "rent_ratio",
+                "ad", "ad_ratio",
+                "operating_profit", "operating_profit_ratio",
+                "interest", "extraordinary_profit", 
+                "net_profit", "net_profit_ratio",
+                "labor_production", "labor_dev", "labor_sales", "labor_hr", "labor_pr", "labor_accounting", "labor_store",
+                "rent_factory", "rent_office", "rent_store",
+                "material", "stock_purchase", "facility_purchase"
+            ]
+            
+            writer = csv.DictWriter(f, fieldnames=[header_map[k] for k in field_order])
+            writer.writeheader()
+            
+            for w in sorted(pl_data.keys()):
+                for cid in sorted(pl_data[w].keys()):
+                    cats = pl_data[w][cid]
+                    row = {}
+                    
+                    # 各項目の計算
+                    revenue = cats.get('revenue', 0)
+                    cogs = cats.get('cogs', 0)
+                    ad = cats.get('ad', 0)
+                    interest = cats.get('interest', 0)
+                    extraordinary = cats.get('facility_sell', 0)
+                    
+                    labor_total = sum(cats.get(k, 0) for k in cats if k.startswith('labor'))
+                    rent_total = sum(cats.get(k, 0) for k in cats if k.startswith('rent'))
+                    
+                    gross_profit = revenue - cogs
+                    operating_profit = gross_profit - (labor_total + rent_total + ad)
+                    net_profit = operating_profit - interest + extraordinary
+                    
+                    # Rowデータ作成
+                    row["week"] = w
+                    row["company_id"] = cid
+                    row["company_name"] = company_map.get(cid, "Unknown")
+                    row["phase"] = phase_map.get((w, cid), "-")
+                    row["revenue"] = revenue
+                    row["cogs"] = cogs
+                    row["gross_profit"] = gross_profit
+                    row["labor_total"] = labor_total
+                    row["rent_total"] = rent_total
+                    row["ad"] = ad
+                    row["operating_profit"] = operating_profit
+                    row["interest"] = interest
+                    row["extraordinary_profit"] = extraordinary
+                    row["net_profit"] = net_profit
+                    
+                    # 割合計算
+                    def calc_ratio(val, base):
+                        return f"{(val / base) * 100:.1f}%" if base != 0 else "0.0%"
+
+                    row["cogs_ratio"] = calc_ratio(cogs, revenue)
+                    row["gross_profit_ratio"] = calc_ratio(gross_profit, revenue)
+                    row["labor_ratio"] = calc_ratio(labor_total, revenue)
+                    row["rent_ratio"] = calc_ratio(rent_total, revenue)
+                    row["ad_ratio"] = calc_ratio(ad, revenue)
+                    row["operating_profit_ratio"] = calc_ratio(operating_profit, revenue)
+                    row["net_profit_ratio"] = calc_ratio(net_profit, revenue)
+
+                    # 詳細項目
+                    for k in field_order:
+                        if k in row:
+                            continue
+                        if k.startswith('labor') or k.startswith('rent') or k in ['material', 'stock_purchase', 'facility_purchase']:
+                            row[k] = cats.get(k, 0)
+                            
+                    # 日本語キーに変換して書き込み
+                    jp_row = {header_map[k]: row.get(k, 0) for k in field_order}
+                    writer.writerow(jp_row)
+                    
+        print("P/L detailed report generation completed successfully.")
+        
+    except Exception as e:
+        print(f"Error exporting P/L detailed report: {e}")
 
 if __name__ == "__main__":
     run_report()

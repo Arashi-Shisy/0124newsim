@@ -187,9 +187,10 @@ def run_seed():
         # 部署ごとの必要人数 (要件定義のコスト構造に基づく)
         staff_req = {}
         if c_type == 'maker':
-            # 生産能力: 需要の1.2倍確保
+            # 生産能力: 初期NPCの能力値(平均30程度)が基準(50)より低いため、実効効率は0.6倍程度になる。
+            # 競争を発生させるため、実効供給力が需要を上回るように係数を強化する (1.5 -> 2.5)
             # 1人あたり生産効率: gb.BASE_PRODUCTION_EFFICIENCY
-            needed_prod = (share * 1.5) / gb.BASE_PRODUCTION_EFFICIENCY # 初期供給能力を強化 (1.5倍)
+            needed_prod = (share * 2.5) / gb.BASE_PRODUCTION_EFFICIENCY
             staff_req[gb.DEPT_PRODUCTION] = max(1, int(needed_prod * 1.2 / gb.NPC_SCALE_FACTOR))
             
             # 他部署は生産人員に対する比率で設定
@@ -202,8 +203,8 @@ def run_seed():
             total_others = sum(staff_req.values()) * gb.NPC_SCALE_FACTOR
             staff_req[gb.DEPT_HR] = max(1, int((total_others / gb.HR_CAPACITY_PER_PERSON) * 1.5 / gb.NPC_SCALE_FACTOR))
         else:
-            # 店舗能力: 需要の1.2倍確保
-            needed_store = share / gb.BASE_SALES_EFFICIENCY
+            # 店舗能力: 同様に初期能力不足を考慮して強化 (1.0 -> 2.5)
+            needed_store = (share * 2.5) / gb.BASE_SALES_EFFICIENCY
             staff_req[gb.DEPT_STORE] = max(1, int(needed_store * 1.2 / gb.NPC_SCALE_FACTOR))
             
             # 他部署

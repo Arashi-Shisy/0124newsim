@@ -1,5 +1,5 @@
 # c:\0124newSIm\src\app.py
-from flask import Flask, render_template, request, redirect, url_for, flash
+from flask import Flask, render_template, request, redirect, url_for, flash, jsonify
 from markupsafe import Markup
 import os
 import json
@@ -32,11 +32,18 @@ def inject_common_data():
     week_of_year = (current_week - 1) % 52 + 1
     date_str = f"{year}年 Week {week_of_year}"
 
+    # ヘッダー用企業能力データ
+    header_caps = None
+    if player:
+        header_caps = sim.calculate_capabilities(player['id'])
+
     return dict(
         player=player,
         current_week=current_week,
         date_str=date_str,
-        active_page=request.endpoint
+        active_page=request.endpoint,
+        header_caps=header_caps,
+        npc_scale=gb.NPC_SCALE_FACTOR
     )
 
 def get_ability_bounds(value, hr_power):
@@ -272,7 +279,7 @@ def hr_fire():
     if npc_id:
         db.execute_query("""
             UPDATE npcs SET company_id = NULL, department = NULL, role = NULL, 
-            last_resigned_week = ?, last_company_id = ? 
+            last_resigned_week = ?, last_company_id = ?, loyalty = 50 
             WHERE id = ?
         """, (current_week, player['id'], npc_id))
         flash("解雇しました。", "warning")
@@ -296,6 +303,34 @@ def hr_hire():
         flash("採用オファーを出しました。来週結果がわかります。", "info")
         
     return redirect(url_for('hr', tab='candidates'))
+
+@app.route('/hr/hire_bulk', methods=['POST'])
+def hr_hire_bulk():
+    # JSONデータを受け取る
+    data = request.get_json()
+    offers = data.get('offers', [])
+    current_week = sim.get_current_week()
+    player = get_player_company()
+    
+    # 実行用パラメータリストを作成
+    params = []
+    for offer in offers:
+        npc_id = offer.get('npc_id')
+        offer_salary = offer.get('offer_salary')
+        target_dept = offer.get('target_dept')
+        if npc_id and offer_salary:
+            params.append((current_week, player['id'], npc_id, offer_salary, target_dept))
+    
+    count = len(params)
+    if count > 0:
+        with db.transaction() as conn:
+            conn.cursor().executemany("""
+                INSERT INTO job_offers (week, company_id, npc_id, offer_salary, target_dept)
+                VALUES (?, ?, ?, ?, ?)
+            """, params)
+    
+    flash(f"{count}名の候補者に一括オファーを出しました。", "success")
+    return jsonify({'status': 'success', 'count': count})
 
 @app.route('/next_week', methods=['POST'])
 def next_week():
@@ -443,7 +478,7 @@ def sales():
     
     # 自社在庫サマリ
     my_inventory = db.fetch_all("""
-        SELECT i.quantity, d.name as product_name, d.sales_price 
+        SELECT i.quantity, d.name as product_name, d.sales_price, i.design_id
         FROM inventory i JOIN product_designs d ON i.design_id = d.id 
         WHERE i.company_id = ? AND i.quantity > 0
     """, (player['id'],))
@@ -461,6 +496,23 @@ def sales_action():
         db.execute_query("UPDATE b2b_orders SET status = ? WHERE id = ?", (status, order_id))
         flash(f"注文を{'受注' if status=='accepted' else '拒否'}しました。", "info")
         
+    return redirect(url_for('sales'))
+
+@app.route('/sales/pricing', methods=['POST'])
+def sales_pricing():
+    player = get_player_company()
+    design_id = request.form.get('design_id')
+    new_price = request.form.get('new_price')
+    
+    if design_id and new_price:
+        try:
+            price_int = int(new_price)
+            if price_int > 0:
+                db.execute_query("UPDATE product_designs SET sales_price = ? WHERE id = ? AND company_id = ?", (price_int, design_id, player['id']))
+                flash(f"販売価格を ¥{price_int:,} に改定しました。", "success")
+        except ValueError:
+            flash("価格には数値を入力してください。", "error")
+            
     return redirect(url_for('sales'))
 
 @app.route('/sales/buy', methods=['POST'])
@@ -561,33 +613,91 @@ def facility():
     # 市場の空き物件
     market_facilities = db.fetch_all("SELECT * FROM facilities WHERE company_id IS NULL LIMIT 50")
     
-    return render_template('facility.html', my_facilities=my_facilities, market_facilities=market_facilities)
+    return render_template('facility.html', my_facilities=my_facilities, market_facilities=market_facilities, purchase_multiplier=gb.FACILITY_PURCHASE_MULTIPLIER)
 
 @app.route('/facility/contract', methods=['POST'])
 def facility_contract():
     player = get_player_company()
     facility_id = request.form.get('facility_id')
+    action = request.form.get('action') # 'rent' or 'buy'
     
-    if facility_id:
+    if facility_id and action:
         # 物件が空いているか確認
         fac = db.fetch_one("SELECT * FROM facilities WHERE id = ? AND company_id IS NULL", (facility_id,))
         if fac:
-            # 契約処理 (賃貸)
-            db.execute_query("UPDATE facilities SET company_id = ?, is_owned = 0 WHERE id = ?", (player['id'], facility_id))
-            flash(f"{fac['name']} (賃料: ¥{fac['rent']:,}/週) を契約しました。", "success")
+            if action == 'rent':
+                # 契約処理 (賃貸)
+                db.execute_query("UPDATE facilities SET company_id = ?, is_owned = 0 WHERE id = ?", (player['id'], facility_id))
+                flash(f"{fac['name']} (賃料: ¥{fac['rent']:,}/週) を賃貸契約しました。", "success")
+            elif action == 'buy':
+                # 購入処理
+                purchase_price = fac['rent'] * gb.FACILITY_PURCHASE_MULTIPLIER
+                if player['funds'] >= purchase_price:
+                    db.execute_query("UPDATE facilities SET company_id = ?, is_owned = 1 WHERE id = ?", (player['id'], facility_id))
+                    db.execute_query("UPDATE companies SET funds = funds - ? WHERE id = ?", (purchase_price, player['id']))
+                    db.execute_query("INSERT INTO account_entries (week, company_id, category, amount) VALUES (?, ?, 'facility_purchase', ?)",
+                                     (sim.get_current_week(), player['id'], purchase_price))
+                    flash(f"{fac['name']} を ¥{purchase_price:,} で購入しました。", "success")
+                else:
+                    flash("資金が不足しています。", "error")
         else:
             flash("この物件は既に契約済みか、存在しません。", "error")
     
     return redirect(url_for('facility'))
 
+@app.route('/facility/release', methods=['POST'])
+def facility_release():
+    player = get_player_company()
+    facility_id = request.form.get('facility_id')
+    action = request.form.get('action') # 'cancel' or 'sell'
+
+    if facility_id and action:
+        fac = db.fetch_one("SELECT * FROM facilities WHERE id = ? AND company_id = ?", (facility_id, player['id']))
+        if fac:
+            if action == 'cancel' and not fac['is_owned']:
+                db.execute_query("UPDATE facilities SET company_id = NULL WHERE id = ?", (facility_id,))
+                flash(f"{fac['name']} の賃貸契約を解約しました。", "info")
+            elif action == 'sell' and fac['is_owned']:
+                # 売却価格は購入価格の80%
+                sell_price = int(fac['rent'] * gb.FACILITY_PURCHASE_MULTIPLIER * 0.8)
+                db.execute_query("UPDATE facilities SET company_id = NULL, is_owned = 0 WHERE id = ?", (facility_id,))
+                db.execute_query("UPDATE companies SET funds = funds + ? WHERE id = ?", (sell_price, player['id']))
+                # 売却益として記録 (簡易的に facility_sell カテゴリ)
+                db.execute_query("INSERT INTO account_entries (week, company_id, category, amount) VALUES (?, ?, 'facility_sell', ?)",
+                                 (sim.get_current_week(), player['id'], sell_price))
+                flash(f"{fac['name']} を ¥{sell_price:,} で売却しました。", "info")
+    
+    return redirect(url_for('facility'))
+
 @app.route('/world')
 def world():
+    current_week = sim.get_current_week()
+    target_week = max(1, current_week - 1)
+
     # 市場トレンド
     trends = db.fetch_all("SELECT * FROM market_trends ORDER BY week DESC LIMIT 10")
     # 企業ランキング
     ranking = db.fetch_all("SELECT * FROM companies WHERE type != 'system_supplier' AND is_active = 1 ORDER BY funds DESC")
     
-    return render_template('world.html', trends=trends, ranking=ranking)
+    # 製品売上ランキング (直近週)
+    product_ranking = db.fetch_all("""
+        SELECT 
+            d.name as product_name, 
+            d.id as design_id,
+            c.name as maker_name, 
+            c.id as maker_id,
+            SUM(t.quantity) as total_quantity, 
+            SUM(t.amount) as total_sales
+        FROM transactions t
+        JOIN product_designs d ON t.design_id = d.id
+        JOIN companies c ON d.company_id = c.id
+        WHERE t.type = 'b2c' AND t.week = ?
+        GROUP BY t.design_id
+        ORDER BY total_sales DESC
+        LIMIT 10
+    """, (target_week,))
+    
+    return render_template('world.html', trends=trends, ranking=ranking, product_ranking=product_ranking, target_week=target_week)
 
 @app.route('/finance')
 def finance():
@@ -668,17 +778,17 @@ def finance():
         amt = e['total']
         
         if cat == 'revenue':
-            pl['revenue'] += amt
+            pl['revenue'] += int(amt)
         elif cat == 'cogs':
-            pl['cogs'] += amt
+            pl['cogs'] += int(amt)
         elif 'labor' in cat:
-            pl['labor'] += amt
+            pl['labor'] += int(amt)
         elif 'rent' in cat:
-            pl['rent'] += amt
+            pl['rent'] += int(amt)
         elif cat == 'ad':
-            pl['ad'] += amt
+            pl['ad'] += int(amt)
         elif cat == 'interest':
-            pl['interest'] += amt
+            pl['interest'] += int(amt)
         # material, stock_purchase, facility_purchase はPL費用ではないため除外(CF/BS項目)
     
     pl['gross_profit'] = pl['revenue'] - pl['cogs']
@@ -737,6 +847,71 @@ def finance():
     return render_template('finance.html', pl=pl, bs=bs, 
                            period=period, target=target, label=label,
                            prev_target=prev_target, next_target=next_target)
+
+@app.route('/company/<int:company_id>')
+def company_detail(company_id):
+    comp = db.fetch_one("SELECT * FROM companies WHERE id = ?", (company_id,))
+    if not comp: return "Company not found", 404
+    
+    # 製品一覧
+    products = db.fetch_all("SELECT * FROM product_designs WHERE company_id = ? AND status = 'completed'", (company_id,))
+    
+    # 従業員数
+    emp_count = db.fetch_one("SELECT COUNT(*) as cnt FROM npcs WHERE company_id = ?", (company_id,))['cnt']
+    
+    # 代表者 (CEO)
+    ceo = db.fetch_one("SELECT * FROM npcs WHERE company_id = ? AND role = 'ceo'", (company_id,))
+    
+    # 財務簡易情報 (直近週)
+    current_week = sim.get_current_week()
+    stats = db.fetch_one("SELECT * FROM weekly_stats WHERE company_id = ? AND week = ?", (company_id, current_week - 1))
+    
+    return render_template('detail_company.html', comp=comp, products=products, emp_count=emp_count, ceo=ceo, stats=stats)
+
+@app.route('/product/<int:design_id>')
+def product_detail(design_id):
+    product = db.fetch_one("""
+        SELECT p.*, c.name as maker_name, c.id as maker_id 
+        FROM product_designs p 
+        JOIN companies c ON p.company_id = c.id 
+        WHERE p.id = ?
+    """, (design_id,))
+    if not product: return "Product not found", 404
+    
+    # パーツ構成のデコード
+    parts_config = json.loads(product['parts_config']) if product['parts_config'] else {}
+    
+    # パーツ詳細情報の取得
+    parts_details = []
+    total_cost = 0
+    for key, conf in parts_config.items():
+        supplier = db.fetch_one("SELECT name FROM companies WHERE id = ?", (conf['supplier_id'],))
+        parts_details.append({
+            'key': key,
+            'supplier_name': supplier['name'] if supplier else "Unknown",
+            'score': conf['score'],
+            'cost': conf['cost']
+        })
+        total_cost += conf['cost']
+
+    return render_template('detail_product.html', product=product, parts_details=parts_details, total_cost=total_cost)
+
+@app.route('/npc/<int:npc_id>')
+def npc_detail(npc_id):
+    npc = db.fetch_one("""
+        SELECT n.*, c.name as company_name 
+        FROM npcs n 
+        LEFT JOIN companies c ON n.company_id = c.id 
+        WHERE n.id = ?
+    """, (npc_id,))
+    if not npc: return "NPC not found", 404
+    
+    # プレイヤーの人事力を取得（能力値マスク用）
+    player = get_player_company()
+    caps = sim.calculate_capabilities(player['id'])
+    hr_power = caps['hr']
+    
+    return render_template('detail_npc.html', npc=npc, hr_power=hr_power)
 
 if __name__ == '__main__':
     # データベースがない場合は初期化

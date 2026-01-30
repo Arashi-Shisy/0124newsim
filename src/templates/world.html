@@ -56,5 +56,37 @@
             </table>
         </div>
     </div>
+
+    <div class="card card-large">
+        <div class="card-header">
+            <h2>製品売上ランキング (Week {{ target_week }})</h2>
+        </div>
+        <div class="card-body">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>順位</th>
+                        <th>製品名</th>
+                        <th>メーカー</th>
+                        <th>販売数</th>
+                        <th>売上高</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for item in product_ranking %}
+                    <tr>
+                        <td>{{ loop.index }}</td>
+                        <td><a href="{{ url_for('product_detail', design_id=item.design_id) }}" style="color: #4db8ff;">{{ item.product_name }}</a></td>
+                        <td><a href="{{ url_for('company_detail', company_id=item.maker_id) }}" style="color: #4db8ff;">{{ item.maker_name }}</a></td>
+                        <td>{{ "{:,}".format(item.total_quantity) }} 台</td>
+                        <td>¥{{ "{:,}".format(item.total_sales) }}</td>
+                    </tr>
+                    {% else %}
+                    <tr><td colspan="5">データがありません。</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
 </div>
 {% endblock %}

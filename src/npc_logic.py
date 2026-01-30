@@ -25,6 +25,7 @@ class NPCLogic:
         else:
             # フォールバック
             self.employees = db.fetch_all("SELECT * FROM npcs WHERE company_id = ?", (self.company_id,))
+        self.phase = 'STABLE' # Default
 
     def _get_ceo_precision(self, stat_name):
         """
@@ -61,25 +62,87 @@ class NPCLogic:
         
         return int(labor + rent + interest)
 
+    def update_phase(self, current_week):
+        """企業の現状分析を行い、フェーズを決定する"""
+        old_phase = self.phase
+        funds = self.company['funds']
+        fixed_costs = self._calculate_weekly_fixed_costs()
+        
+        # 借入余力
+        loans = db.fetch_one("SELECT SUM(amount) as total FROM loans WHERE company_id = ?", (self.company_id,))
+        current_debt = loans['total'] or 0
+        borrowing_limit = self.company['borrowing_limit']
+        credit_room = borrowing_limit - current_debt
+        
+        # 直近の収益性 (4週間)
+        recent_pl = db.fetch_one("""
+            SELECT 
+                SUM(CASE WHEN category = 'revenue' THEN amount ELSE 0 END) as revenue,
+                SUM(CASE WHEN category IN ('cogs', 'labor', 'rent', 'ad', 'interest') THEN amount ELSE 0 END) as expenses
+            FROM account_entries 
+            WHERE company_id = ? AND week >= ?
+        """, (self.company_id, current_week - 4))
+        
+        revenue = recent_pl['revenue'] or 0
+        expenses = recent_pl['expenses'] or 0
+        profit = revenue - expenses
+
+        # フェーズ判定ロジック
+        # CRISIS: 資金が固定費6週分未満、または借入余力がなく赤字
+        if (funds + credit_room) < (fixed_costs * 6) or (funds < fixed_costs * 4 and profit < 0):
+            self.phase = 'CRISIS'
+        # GROWTH: 黒字かつ、資金に余裕がある (固定費12週分以上)
+        elif profit > 0 and funds > (fixed_costs * 12):
+            self.phase = 'GROWTH'
+        else:
+            self.phase = 'STABLE'
+            
+        if self.phase != old_phase:
+             db.log_file_event(current_week, self.company_id, "Phase Change", f"Changed phase from {old_phase} to {self.phase}")
+
+        # フェーズを統計情報として保存
+        db.set_weekly_stat(current_week, self.company_id, 'phase', self.phase)
+
     def decide_financing(self, current_week):
         """
         資金調達: 運転資金が心許ない場合、借入を行う
         """
-        # 安全マージン（例: 2億円）
-        SAFETY_MARGIN = 200000000
+        fixed_costs = self._calculate_weekly_fixed_costs()
         
-        if self.company['funds'] < SAFETY_MARGIN:
+        # 目標とする手元資金 (フェーズによって変える)
+        target_funds = fixed_costs * 12 # 標準は3ヶ月分
+        if self.phase == 'CRISIS':
+            target_funds = fixed_costs * 24 # 危機時は半年分確保したい
+        elif self.phase == 'GROWTH':
+            target_funds = fixed_costs * 8 # 成長期は投資に回すので手元は少なめで攻める
+
+        # 最低ライン (これ割ったら絶対借りる)
+        min_funds = fixed_costs * 4
+        if self.phase == 'CRISIS':
+            min_funds = fixed_costs * 8
+
+        if self.company['funds'] < target_funds:
             # 借入可能額を確認
             current_loans = db.fetch_one("SELECT SUM(amount) as total FROM loans WHERE company_id = ?", (self.company_id,))
             total_loans = current_loans['total'] if current_loans['total'] else 0
             
             limit = self.company['borrowing_limit']
             borrowable = limit - total_loans
+            borrow_threshold = 10000000 # 1000万単位
             
-            if borrowable > 0:
-                # 不足分 + マージンを借りる
-                target_amount = (SAFETY_MARGIN - self.company['funds']) + 100000000
-                amount = min(borrowable, target_amount)
+            # 借りるべき額
+            needed = target_funds - self.company['funds']
+            
+            # 資金が最低ラインを割っている、またはCRISISなら積極的に借りる
+            should_borrow = False
+            if self.company['funds'] < min_funds: should_borrow = True
+            if self.phase == 'CRISIS': should_borrow = True
+            if self.phase == 'GROWTH' and needed > 0: should_borrow = True # 成長投資用
+
+            if should_borrow and borrowable > borrow_threshold:
+                amount = min(borrowable, needed)
+                # 最低単位
+                amount = max(amount, borrow_threshold)
                 
                 # 金利決定 (格付けが高いほど低い)
                 rating = self.company['credit_rating']
@@ -97,6 +160,7 @@ class NPCLogic:
         """
         # 予算に余裕があるか (運転資金として最低限確保したい額を除く)
         if self.company['funds'] < 50000000: return
+        if self.phase == 'CRISIS': return # 危機時は昇給凍結
 
         for emp in self.employees:
             if emp['desired_salary'] > emp['salary']:
@@ -118,6 +182,9 @@ class NPCLogic:
         """
         if not self.company: return
         
+        # CRISISフェーズでは採用凍結
+        if self.phase == 'CRISIS': return
+
         # 既にオファーを出している件数を確認
         current_offers_cnt = db.fetch_one("SELECT COUNT(*) as cnt FROM job_offers WHERE company_id = ?", (self.company_id,))['cnt']
         offers_to_make = 3 - current_offers_cnt
@@ -161,6 +228,10 @@ class NPCLogic:
         
         if not target_dept:
             target_dept = random.choice(gb.DEPARTMENTS)
+
+        # GROWTHフェーズなら採用枠を増やす
+        if self.phase == 'GROWTH':
+            offers_to_make = min(5, offers_to_make + 2)
 
         # 2. 予算チェック (年収の2倍程度の余裕があるか)
         if self.company['funds'] > gb.BASE_SALARY_YEARLY * gb.NPC_SCALE_FACTOR * 2:
@@ -237,6 +308,37 @@ class NPCLogic:
                     offered_npc_ids.add(best_candidate['id'])
                 else:
                     break # 候補者がいなければ終了
+
+    def decide_restructuring(self, current_week):
+        """
+        リストラ策: CRISISフェーズで赤字の場合、人員削減や施設解約を行う
+        """
+        if self.phase != 'CRISIS': return
+        
+        # 従業員解雇 (能力が低く、給与が高い順)
+        # 役員は除く
+        candidates = [e for e in self.employees if e['role'] not in [gb.ROLE_CEO, gb.ROLE_CXO]]
+        if not candidates: return
+
+        # スコアリング (給与 / 能力平均) -> コスパが悪い順
+        # 能力平均
+        scored_candidates = []
+        for emp in candidates:
+            avg_stat = (emp['production'] + emp['sales'] + emp['development']) / 3
+            fire_score = emp['salary'] / max(1, avg_stat)
+            scored_candidates.append((fire_score, emp))
+        
+        scored_candidates.sort(key=lambda x: x[0], reverse=True)
+        
+        # 1週間に最大1人解雇
+        target = scored_candidates[0][1]
+        # 解雇実行
+        db.execute_query("""
+            UPDATE npcs SET company_id = NULL, department = NULL, role = NULL, 
+            last_resigned_week = ?, last_company_id = ?, loyalty = 50 
+            WHERE id = ?
+        """, (current_week, self.company_id, target['id']))
+        db.log_file_event(current_week, self.company_id, "Restructuring", f"Fired {target['name']} to cut costs")
 
     def decide_promotion(self, current_week):
         """
@@ -395,9 +497,17 @@ class NPCLogic:
             
             # 資金チェック: 固定費4週分は残す
             fixed_costs = self._calculate_weekly_fixed_costs()
+            
+            # 資金計算の改善: CRISIS時や在庫切れ時は、借入枠も含めて全力で生産する
             available_funds = max(0, self.company['funds'] - (fixed_costs * 4))
             
-            if available_funds < total_cost:
+            if self.phase == 'CRISIS' or current_stock == 0:
+                # 借入余力もあてにする
+                loans = db.fetch_one("SELECT SUM(amount) as total FROM loans WHERE company_id = ?", (self.company_id,))
+                credit_room = self.company['borrowing_limit'] - (loans['total'] or 0)
+                available_funds = self.company['funds'] + credit_room
+
+            if available_funds < total_cost and total_cost > 0:
                 to_produce = int(available_funds / material_cost)
                 total_cost = to_produce * material_cost
             
@@ -406,6 +516,13 @@ class NPCLogic:
                 db.execute_query("UPDATE companies SET funds = funds - ? WHERE id = ?", (total_cost, self.company_id))
                 db.execute_query("INSERT INTO account_entries (week, company_id, category, amount) VALUES (?, ?, 'material', ?)",
                                  (current_week, self.company_id, total_cost))
+                
+                # 資金がマイナスになった場合、即座に借入を実行して埋める (キャッシュ不足による倒産判定回避のため)
+                if self.company['funds'] - total_cost < 0:
+                    deficit = abs(self.company['funds'] - total_cost) + 10000000
+                    db.execute_query("INSERT INTO loans (company_id, amount, interest_rate, remaining_weeks) VALUES (?, ?, ?, ?)",
+                                     (self.company_id, deficit, 0.15, gb.LOAN_TERM_WEEKS)) # 緊急借入は金利高め
+                    db.execute_query("UPDATE companies SET funds = funds + ? WHERE id = ?", (deficit, self.company_id))
                 
                 if stock_item:
                     db.execute_query("UPDATE inventory SET quantity = quantity + ? WHERE id = ?", (to_produce, stock_item['id']))
@@ -420,18 +537,24 @@ class NPCLogic:
                 db.increment_weekly_stat(current_week, self.company_id, 'production_ordered', to_produce)
                 db.increment_weekly_stat(current_week, self.company_id, 'production_completed', to_produce)
 
-    def decide_procurement(self, current_week, maker_stocks, my_capabilities, all_capabilities, my_inventory):
+    def decide_procurement(self, current_week, maker_stocks, my_capabilities, all_capabilities, my_inventory, on_order=None):
         """
         小売用: 仕入れ計画
         """
         if self.company['type'] != 'npc_retail': return
         
-        # 予算設定: 固定費4週分を確保し、残りの90%を仕入れ予算とする
+        # 予算設定
         fixed_costs = self._calculate_weekly_fixed_costs()
         reserved_funds = fixed_costs * 4
         budget = max(0, (self.company['funds'] - reserved_funds) * 0.9)
 
         if not maker_stocks: return
+
+        # CRISIS時は予算制限を緩和 (売るものがないと死ぬ)
+        if self.phase == 'CRISIS' and sum(i['quantity'] for i in my_inventory) < 10:
+             loans = db.fetch_one("SELECT SUM(amount) as total FROM loans WHERE company_id = ?", (self.company_id,))
+             credit_room = self.company['borrowing_limit'] - (loans['total'] or 0)
+             budget = self.company['funds'] + credit_room
 
         # all_capabilities は事前計算済み
 
@@ -483,11 +606,16 @@ class NPCLogic:
         target_stock_total = sales_capacity * 6
         current_total_stock = sum(inv['quantity'] for inv in my_inventory)
         
-        # 3. 必要仕入れ数の計算
-        needed_total = target_stock_total - current_total_stock
+        # 3. 発注残の考慮
+        on_order_qty = 0
+        if on_order:
+            on_order_qty = sum(o['quantity'] for o in on_order)
+            
+        # 4. 必要仕入れ数の計算 (目標 - 現在庫 - 発注残)
+        needed_total = target_stock_total - current_total_stock - on_order_qty
         if needed_total <= 0: return
 
-        # 4. 予算と必要数に応じて仕入れ実行
+        # 5. 予算と必要数に応じて仕入れ実行
         total_score = sum(i['score'] for i in scored_items)
         
         # シェア計算用に初期必要数を保持
@@ -535,6 +663,8 @@ class NPCLogic:
         メーカー用: 商品開発計画
         """
         if self.company['type'] != 'npc_maker': return
+
+        if self.phase == 'CRISIS': return # 危機時は新規開発凍結
 
         # 開発中のプロジェクトがあるか確認
         is_developing = any(d['status'] == 'developing' for d in designs)
@@ -597,22 +727,22 @@ class NPCLogic:
 
         if not orders: return
 
-        # 在庫情報の取得 (処理中に減算していくため辞書で管理)
-        inventory_map = {}
-        for s in inventory:
-            inventory_map[s['design_id']] = s['quantity']
+        # 在庫情報のマッピング (リスト内の辞書オブジェクトを直接参照する)
+        inv_dict = {item['design_id']: item for item in inventory}
 
         for order in orders:
             did = order['design_id']
             qty = order['quantity']
             
-            current_stock = inventory_map.get(did, 0)
+            item = inv_dict.get(did)
             
-            if current_stock >= qty:
+            if item and item['quantity'] >= qty:
                 # 受注可能
                 db.execute_query("UPDATE b2b_orders SET status = 'accepted' WHERE id = ?", (order['id'],))
-                # 仮押さえ (シミュレーションのB2B処理フェーズで正式に引かれるが、二重受注を防ぐためここでも計算上の在庫を減らす)
-                inventory_map[did] -= qty
+                # メモリ上の在庫を即座に減らす
+                # これにより、後続の decide_production が「在庫が減った」ことを認識して生産できるようになる
+                item['quantity'] -= qty
+                
                 db.log_file_event(current_week, self.company_id, "B2B Accept", f"Accepted Order ID {order['id']} ({qty} units)")
             else:
                 # 在庫不足のため拒否 (または部分納品だが今回は拒否)
@@ -639,6 +769,9 @@ class NPCLogic:
         store_needs = dept_counts.get(gb.DEPT_STORE, 0)
         # オフィス: その他全員
         office_needs = len(self.employees) - factory_needs - store_needs
+
+        # CRISIS時は拡張しない
+        if self.phase == 'CRISIS': return
 
         # 現在の施設容量を確認
         facilities = db.fetch_all("SELECT type, size FROM facilities WHERE company_id = ?", (self.company_id,))
@@ -684,8 +817,10 @@ class NPCLogic:
         """
         広告戦略: 資金に余裕があればブランド広告や商品広告を打つ
         """
-        # 予算: 資金の5%程度
-        budget = self.company['funds'] * 0.05
+        if self.phase == 'CRISIS': return
+
+        # 予算: 資金の2% または 5000万円 の小さい方 (過剰投資防止)
+        budget = min(self.company['funds'] * 0.02, 50000000)
         if budget < gb.AD_COST_UNIT: return
 
         # 広報能力計算
@@ -759,13 +894,19 @@ class NPCLogic:
                 # 閾値を性格で補正
                 overstock_threshold = 50 * patience
                 shortage_threshold = 10 / patience
+                
+                # CRISIS時は在庫処分を急ぐ
+                if self.phase == 'CRISIS':
+                    overstock_threshold *= 0.5
 
                 # ロジック: 在庫過多なら値下げ、品薄なら値上げ
                 if current_qty > overstock_threshold and avg_sales_qty < (5 * patience):
                     # 基準価格(base_price)が原価ではないので、parts_configから原価を計算
                     p_conf = json.loads(p['parts_config']) if p['parts_config'] else {}
                     material_cost = sum(part['cost'] for part in p_conf.values()) if p_conf else 0
-                    min_price = int(material_cost * gb.MIN_PROFIT_MARGIN)
+                    # CRISIS時は原価割れでも現金化する
+                    min_margin = 0.8 if self.phase == 'CRISIS' else gb.MIN_PROFIT_MARGIN
+                    min_price = int(material_cost * min_margin)
 
                     # 値下げ幅に性格(aggressiveness)と揺らぎを加える
                     drop_rate = gb.PRICE_ADJUST_RATE * aggressiveness * random.uniform(0.8, 1.2)

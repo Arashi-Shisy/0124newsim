@@ -11,8 +11,66 @@
     <div class="app-container">
         <!-- Top Bar -->
         <header class="top-bar">
-            <div class="logo-area">
-                <h1>{{ player.name if player else '自社名' }}</h1>
+            <div class="logo-area tooltip-container">
+                <h1>
+                    {{ player.name if player else '自社名' }}
+                    {% if player %}
+                    <span style="font-size: 0.6em; color: #4db8ff; margin-left: 15px; font-weight: normal;">¥{{ "{:,}".format(player.funds|int) }}</span>
+                    {% endif %}
+                </h1>
+                
+                {% if player and header_caps %}
+                <div class="tooltip-content">
+                    <div class="tooltip-section">
+                        <div class="tooltip-row">
+                            <span style="color: var(--text-muted);">組織安定性</span>
+                            <span style="font-weight: bold;">{{ header_caps.stability|int }}</span>
+                        </div>
+                    </div>
+                    
+                    <div class="tooltip-section">
+                        <table class="tooltip-table">
+                            <thead>
+                                <tr>
+                                    <th>部署</th>
+                                    <th style="text-align: right;">能力</th>
+                                    <th style="text-align: right;">Cap</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% set header_stats_list = [
+                                    ('生産', 'production'),
+                                    ('開発', 'development'),
+                                    ('営業', 'sales'),
+                                    ('店舗', 'store_ops'),
+                                    ('人事', 'hr'),
+                                    ('広報', 'pr'),
+                                    ('経理', 'accounting')
+                                ] %}
+                                {% for label, key in header_stats_list %}
+                                <tr>
+                                    <td>{{ label }}</td>
+                                    <td style="color: #4db8ff;">{{ header_caps[key]|int }}</td>
+                                    <td>{{ header_caps[key + '_capacity']|int }}</td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <div class="tooltip-section">
+                        <div style="font-size: 0.85em; color: var(--text-muted); margin-bottom: 5px;">施設稼働 ({{ npc_scale }}人/NPC)</div>
+                        {% for key, fac in header_caps.facilities.items() %}
+                        <div class="tooltip-row">
+                            <span>{{ fac.name }}</span>
+                            <span class="{{ 'text-danger' if fac.usage > fac.limit else '' }}">
+                                {{ fac.usage }} / {{ fac.limit }}
+                            </span>
+                        </div>
+                        {% endfor %}
+                    </div>
+                </div>
+                {% endif %}
             </div>
             <nav class="top-nav">
                 <a href="{{ url_for('dashboard') }}" class="{{ 'active' if active_page == 'dashboard' else '' }}">ダッシュボード</a>

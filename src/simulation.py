@@ -250,7 +250,7 @@ class Simulation:
         inventory_by_company = {c['id']: [] for c in all_companies}
         for inv in all_inventory_res:
             if inv['company_id'] in inventory_by_company:
-                inventory_by_company[inv['company_id']].append(inv)
+                inventory_by_company[inv['company_id']].append(dict(inv))
 
         # 全商品設計書
         all_designs_res = db.fetch_all("SELECT * FROM product_designs")
@@ -262,12 +262,17 @@ class Simulation:
         # 採用候補者プール
         candidates_pool = db.fetch_all("SELECT * FROM npcs WHERE company_id IS NULL LIMIT 500")
 
-        # B2B注文 (保留中)
-        pending_orders_res = db.fetch_all("SELECT * FROM b2b_orders WHERE status = 'pending'")
+        # B2B注文 (保留中・承認済み未納品)
+        # メーカー(Seller)は 'pending' のみを処理対象とする
+        # 小売(Buyer)は 'pending' と 'accepted' を発注残としてカウントする
+        active_orders_res = db.fetch_all("SELECT * FROM b2b_orders WHERE status IN ('pending', 'accepted')")
         orders_for_seller = {c['id']: [] for c in all_companies}
-        for order in pending_orders_res:
-            if order['seller_id'] in orders_for_seller:
+        orders_for_buyer = {c['id']: [] for c in all_companies}
+        for order in active_orders_res:
+            if order['status'] == 'pending' and order['seller_id'] in orders_for_seller:
                 orders_for_seller[order['seller_id']].append(order)
+            if order['buyer_id'] in orders_for_buyer:
+                orders_for_buyer[order['buyer_id']].append(order)
 
         # 市場のメーカー在庫 (小売の仕入れ判断用)
         # 修正: 在庫の所有者(i.company_id)がメーカーまたはプレイヤーであるものを対象とする
@@ -289,11 +294,23 @@ class Simulation:
 
             logic = NPCLogic(comp['id'], company_data=comp, employees=company_employees)
 
+            # フェーズ更新とリストラ判断 (最初に行う) - 経営状態の確認
+            logic.update_phase(current_week)
+            logic.decide_restructuring(current_week)
+
             # 各メソッドに事前取得したデータを渡す
             logic.decide_financing(current_week)
             logic.decide_hiring(current_week, candidates_pool=candidates_pool)
             logic.decide_salary(current_week)
             logic.decide_promotion(current_week)
+            
+            # 受注処理を先に実行 (在庫を引き当てるため)
+            logic.decide_order_fulfillment(
+                current_week,
+                orders=orders_for_seller.get(comp['id'], []),
+                inventory=company_inventory
+            )
+            
             logic.decide_production(
                 current_week,
                 designs=company_designs,
@@ -307,12 +324,8 @@ class Simulation:
                 maker_stocks=maker_stocks,
                 my_capabilities=all_caps.get(comp['id']),
                 all_capabilities=all_caps,
-                my_inventory=company_inventory
-            )
-            logic.decide_order_fulfillment(
-                current_week,
-                orders=orders_for_seller.get(comp['id'], []),
-                inventory=company_inventory
+                my_inventory=company_inventory,
+                on_order=orders_for_buyer.get(comp['id'], [])
             )
             logic.decide_development(current_week, designs=company_designs)
             logic.decide_facilities(current_week)
@@ -746,12 +759,18 @@ class Simulation:
                     target_dept = best_offer['target_dept']
                     if not target_dept: target_dept = gb.DEPT_PRODUCTION # フォールバック
 
-                    cursor.execute("UPDATE npcs SET company_id = ?, department = ?, role = ?, salary = ?, desired_salary = ? WHERE id = ?",
+                    cursor.execute("UPDATE npcs SET company_id = ?, department = ?, role = ?, salary = ?, desired_salary = ?, loyalty = 50 WHERE id = ?",
                                    (best_offer['company_id'], target_dept, gb.ROLE_MEMBER, best_offer['offer_salary'], best_offer['offer_salary'], nid))
                     
                     cursor.execute("INSERT INTO news_logs (week, company_id, message, type) VALUES (?, ?, ?, ?)",
                                    (week, best_offer['company_id'], f"{npc['name']} を採用しました (年収: ¥{best_offer['offer_salary']:,})", 'info'))
-        
+                    
+                    cid = best_offer['company_id']
+                    hired_counts[cid] = hired_counts.get(cid, 0) + 1
+
+        for cid, count in hired_counts.items():
+            db.increment_weekly_stat(week, cid, 'hired_count', count)
+
         # オファーテーブルのクリーンアップ (今週分は処理済み)
         db.execute_query("DELETE FROM job_offers WHERE week <= ?", (week,))
 
@@ -890,7 +909,7 @@ class Simulation:
                     updates_to_run.append((sql, tuple(params)))
 
                 # 3. 給与支払い
-                weekly_salary = (npc['salary'] * gb.NPC_SCALE_FACTOR) / gb.WEEKS_PER_YEAR_REAL
+                weekly_salary = int((npc['salary'] * gb.NPC_SCALE_FACTOR) / gb.WEEKS_PER_YEAR_REAL)
                 
                 dept = npc['department']
                 cat = 'labor'
@@ -1114,7 +1133,7 @@ class Simulation:
                         self.log_news(week, comp['id'], f"{comp['name']} が倒産しました。", 'market')
                         
                         # 1. 従業員の解雇
-                        db.execute_query("UPDATE npcs SET company_id = NULL, department = NULL, role = NULL WHERE company_id = ?", (comp['id'],))
+                        db.execute_query("UPDATE npcs SET company_id = NULL, department = NULL, role = NULL, loyalty = 50 WHERE company_id = ?", (comp['id'],))
                         
                         # 2. 資産・負債の消滅 (簡易処理)
                         db.execute_query("DELETE FROM inventory WHERE company_id = ?", (comp['id'],))

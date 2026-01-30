@@ -79,7 +79,7 @@
                 <tbody>
                     {% for prod in completed %}
                     <tr>
-                        <td>{{ prod.name }}</td>
+                        <td><a href="{{ url_for('product_detail', design_id=prod.id) }}" style="color: #4db8ff;">{{ prod.name }}</a></td>
                         <td>{{ "{:.2f}".format(prod.concept_score) }}</td>
                         <td>{{ "{:.2f}".format(prod.production_efficiency) }}</td>
                         <td>¥{{ "{:,}".format(prod.sales_price) }}</td>

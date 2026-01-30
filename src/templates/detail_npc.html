@@ -1,0 +1,115 @@
+<!-- c:\0124newSIm\src\templates\detail_npc.html -->
+{% extends "base.html" %}
+
+{% block content %}
+<div class="dashboard-grid">
+    <div class="card">
+        <div class="card-header">
+            <h2>プロフィール</h2>
+        </div>
+        <div class="card-body">
+            <h3 style="margin: 0 0 10px 0; font-size: 1.5em;">{{ npc.name }}</h3>
+            <div class="stat-row">
+                <span class="label">年齢</span>
+                <span class="value">{{ npc.age }}歳 ({{ npc.gender }})</span>
+            </div>
+            <div class="stat-row">
+                <span class="label">所属</span>
+                <span class="value">
+                    {% if npc.company_name %}
+                    <a href="{{ url_for('company_detail', company_id=npc.company_id) }}" style="color: #4db8ff;">{{ npc.company_name }}</a>
+                    {% else %}
+                    無職 (労働市場)
+                    {% endif %}
+                </span>
+            </div>
+            <div class="stat-row">
+                <span class="label">部署 / 役職</span>
+                <span class="value">{{ npc.department or '-' }} / {{ npc.role or '-' }}</span>
+            </div>
+            <div class="stat-row">
+                <span class="label">現在の給与</span>
+                <span class="value">¥{{ "{:,}".format(npc.salary) }}</span>
+            </div>
+            <div class="stat-row">
+                <span class="label">希望給与</span>
+                <span class="value">¥{{ "{:,}".format(npc.desired_salary) }}</span>
+            </div>
+            <div class="stat-row">
+                <span class="label">忠誠度</span>
+                <span class="value">
+                    <div class="bar-container" style="width: 100px; display: inline-block; vertical-align: middle;">
+                        <div class="bar-fill" style="width: {{ npc.loyalty }}%; background-color: {{ '#e94560' if npc.loyalty < 40 else '#0f3460' }};"></div>
+                    </div>
+                    {{ npc.loyalty|int }}
+                </span>
+            </div>
+        </div>
+    </div>
+
+    <div class="card card-large">
+        <div class="card-header">
+            <h2>能力値 (人事評価)</h2>
+            <span style="font-size: 0.8em; color: var(--text-muted);">※自社の人事力に基づいた推定値です</span>
+        </div>
+        <div class="card-body">
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+                <div>
+                    <h4 style="border-bottom: 1px solid var(--border-color); padding-bottom: 5px;">基本能力</h4>
+                    <div class="stat-row">
+                        <span class="label">勤勉さ (Stability)</span>
+                        <span class="value">{{ npc.diligence | ability_range_colored(hr_power) }}</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="label">適応力 (Growth)</span>
+                        <span class="value">{{ npc.adaptability | ability_range_colored(hr_power) }}</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="label">マネジメント</span>
+                        <span class="value">{{ npc.management | ability_range_colored(hr_power) }}</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="label">役員適正</span>
+                        <span class="value">{{ npc.executive | ability_range_colored(hr_power) }}</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="label">業界適性</span>
+                        <span class="value">{{ "{:.1f}".format(npc.industry_aptitude) }}</span>
+                    </div>
+                </div>
+                <div>
+                    <h4 style="border-bottom: 1px solid var(--border-color); padding-bottom: 5px;">実務能力</h4>
+                    <div class="stat-row">
+                        <span class="label">生産 (Production)</span>
+                        <span class="value">{{ npc.production | ability_range_colored(hr_power) }}</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="label">開発 (Development)</span>
+                        <span class="value">{{ npc.development | ability_range_colored(hr_power) }}</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="label">営業 (Sales)</span>
+                        <span class="value">{{ npc.sales | ability_range_colored(hr_power) }}</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="label">店舗 (Store)</span>
+                        <span class="value">{{ npc.store_ops | ability_range_colored(hr_power) }}</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="label">人事 (HR)</span>
+                        <span class="value">{{ npc.hr | ability_range_colored(hr_power) }}</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="label">広報 (PR)</span>
+                        <span class="value">{{ npc.pr | ability_range_colored(hr_power) }}</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="label">経理 (Accounting)</span>
+                        <span class="value">{{ npc.accounting | ability_range_colored(hr_power) }}</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

@@ -11,7 +11,7 @@
         <div class="card-body">
             <div class="stat-row">
                 <span class="label">現金残高</span>
-                <span class="value">¥{{ "{:,}".format(funds) }}</span>
+                <span class="value">¥{{ "{:,}".format(funds|int) }}</span>
             </div>
             <div class="stat-row">
                 <span class="label">従業員数</span>

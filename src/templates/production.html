@@ -54,7 +54,7 @@
                 <tbody>
                     {% for item in inventory if item.quantity > 0 %}
                     <tr>
-                        <td>{{ item.product_name }}</td>
+                        <td><a href="{{ url_for('product_detail', design_id=item.design_id) }}" style="color: #4db8ff;">{{ item.product_name }}</a></td>
                         <td>{{ "{:,}".format(item.quantity) }}</td>
                     </tr>
                     {% else %}
@@ -85,7 +85,7 @@
                 <tbody>
                     {% for design in designs %}
                     <tr>
-                        <td>{{ design.name }}</td>
+                        <td><a href="{{ url_for('product_detail', design_id=design.id) }}" style="color: #4db8ff;">{{ design.name }}</a></td>
                         <td>{{ inv_map.get(design.id, 0) }}</td>
                         <td>{{ design.production_efficiency }}</td>
                         <td>

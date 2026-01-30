@@ -45,7 +45,7 @@
                 <tbody>
                     {% for item in inventory %}
                     <tr>
-                        <td>{{ item.product_name }}</td>
+                        <td><a href="{{ url_for('product_detail', design_id=item.design_id) }}" style="color: #4db8ff;">{{ item.product_name }}</a></td>
                         <td>{{ item.quantity }}</td>
                         <td>¥{{ "{:,}".format(item.msrp) }}</td>
                         <td>¥{{ "{:,}".format(item.sales_price) }}</td>

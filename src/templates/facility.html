@@ -18,6 +18,7 @@
                         <th>賃料/週</th>
                         <th>所有形態</th>
                         <th>アクセス</th>
+                        <th>操作</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -29,9 +30,20 @@
                         <td>¥{{ "{:,}".format(fac.rent) }}</td>
                         <td>{{ '自社所有' if fac.is_owned else '賃貸' }}</td>
                         <td>{{ fac.access_score if fac.access_score else '-' }}</td>
+                        <td>
+                            <form action="{{ url_for('facility_release') }}" method="post">
+                                <input type="hidden" name="facility_id" value="{{ fac.id }}">
+                                {% if fac.is_owned %}
+                                    {% set sell_price = (fac.rent * purchase_multiplier * 0.8)|int %}
+                                    <button type="submit" name="action" value="sell" class="btn btn-small btn-primary" onclick="return confirm('本当に売却しますか？\n売却額: ¥{{ '{:,}'.format(sell_price) }}')">売却 (¥{{ "{:,}".format(sell_price) }})</button>
+                                {% else %}
+                                    <button type="submit" name="action" value="cancel" class="btn btn-small btn-danger" onclick="return confirm('本当に解約しますか？')">解約</button>
+                                {% endif %}
+                            </form>
+                        </td>
                     </tr>
                     {% else %}
-                    <tr><td colspan="6">施設がありません。</td></tr>
+                    <tr><td colspan="7">施設がありません。</td></tr>
                     {% endfor %}
                 </tbody>
             </table>
@@ -66,7 +78,9 @@
                         <td>
                             <form action="{{ url_for('facility_contract') }}" method="post">
                                 <input type="hidden" name="facility_id" value="{{ fac.id }}">
-                                <button type="submit" class="btn btn-small btn-primary">契約</button>
+                                {% set buy_price = (fac.rent * purchase_multiplier)|int %}
+                                <button type="submit" name="action" value="rent" class="btn btn-small btn-secondary">賃貸</button>
+                                <button type="submit" name="action" value="buy" class="btn btn-small btn-primary" onclick="return confirm('購入しますか？\n価格: ¥{{ '{:,}'.format(buy_price) }}')">購入 (¥{{ "{:,}".format(buy_price) }})</button>
                             </form>
                         </td>
                     </tr>

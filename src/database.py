@@ -250,6 +250,7 @@ class Database:
             facility_costs INTEGER DEFAULT 0,
             loan_balance INTEGER DEFAULT 0,
             funds INTEGER DEFAULT 0,
+            phase TEXT,
             PRIMARY KEY (week, company_id)
         )
         """)
