@@ -377,6 +377,10 @@ class Simulation:
         # 8. 倒産判定
         self.check_bankruptcy(current_week)
         print(f"[Week {current_week}] Phase 8: Bankruptcy Check Finished")
+        
+        # 9. 株式市場・決算処理
+        self.process_stock_market(current_week, all_caps)
+        print(f"[Week {current_week}] Phase 9: Stock Market Processing Finished")
 
         # 7. 週更新
         new_week = current_week + 1
@@ -1157,3 +1161,154 @@ class Simulation:
                         if candidate:
                             db.execute_query("UPDATE npcs SET company_id = ?, role = ?, department = ? WHERE id = ?", 
                                              (new_id, gb.ROLE_CEO, gb.DEPT_HR, candidate['id'])) # CEOは一旦HR所属扱いにしておく
+
+    def process_stock_market(self, week, all_caps):
+        """
+        株式市場の処理: 株価更新、決算発表、経理キャパシティ判定
+        """
+        companies = db.fetch_all("SELECT * FROM companies WHERE type != 'system_supplier' AND is_active = 1")
+        
+        with db.transaction() as conn:
+            cursor = conn.cursor()
+            
+            for comp in companies:
+                cid = comp['id']
+                
+                # --- 1. 決算処理 (Accounting) ---
+                # 四半期ごとの締め処理
+                is_quarter_end = (week % gb.QUARTER_WEEKS == 0)
+                
+                if is_quarter_end:
+                    # 四半期データの集計
+                    start_week = week - gb.QUARTER_WEEKS + 1
+                    
+                    # PL集計
+                    cursor.execute("""
+                        SELECT category, SUM(amount) as total 
+                        FROM account_entries 
+                        WHERE company_id = ? AND week BETWEEN ? AND ?
+                        GROUP BY category
+                    """, (cid, start_week, week))
+                    entries = cursor.fetchall()
+                    
+                    revenue = 0
+                    expenses = 0
+                    for e in entries:
+                        if e['category'] == 'revenue': revenue += e['total']
+                        elif e['category'] not in ['material', 'stock_purchase', 'facility_purchase', 'facility_sell']:
+                            expenses += e['total']
+                    
+                    net_profit = revenue - expenses
+                    
+                    # BS集計 (簡易)
+                    total_assets = comp['funds'] # + 在庫 + 施設 (今回は簡易化)
+                    # 負債
+                    cursor.execute("SELECT SUM(amount) as total FROM loans WHERE company_id = ?", (cid,))
+                    debt_res = cursor.fetchone()
+                    debt = debt_res['total'] if debt_res and debt_res['total'] else 0
+                    net_assets = total_assets - debt
+                    
+                    # 決算書作成 (Status: draft)
+                    year = 2025 + (week - 1) // 52
+                    q = ((week - 1) // 13) % 4 + 1
+                    period_str = f"{year} Q{q}"
+                    
+                    cursor.execute("""
+                        INSERT INTO financial_reports (company_id, week, period_str, revenue, net_profit, total_assets, net_assets, status)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, 'draft')
+                    """, (cid, week, period_str, revenue, net_profit, total_assets, net_assets))
+                
+                # --- 2. 経理キャパシティと発表判定 ---
+                # 未発表の決算があるか確認
+                cursor.execute("SELECT * FROM financial_reports WHERE company_id = ? AND status = 'draft'", (cid,))
+                draft_report = cursor.fetchone()
+                
+                accounting_penalty = 1.0 # 株価への影響係数
+                
+                if draft_report:
+                    # 経理負荷の計算
+                    # 取引数
+                    cursor.execute("SELECT COUNT(*) as cnt FROM transactions WHERE (seller_id = ? OR buyer_id = ?) AND week = ?", (cid, cid, week))
+                    tx_count = cursor.fetchone()['cnt']
+                    
+                    # 従業員数
+                    cursor.execute("SELECT COUNT(*) as cnt FROM npcs WHERE company_id = ?", (cid,))
+                    emp_count = cursor.fetchone()['cnt']
+                    
+                    load = (tx_count * gb.ACCOUNTING_LOAD_PER_TRANSACTION) + (emp_count * gb.ACCOUNTING_LOAD_PER_EMPLOYEE)
+                    
+                    # 経理キャパシティ
+                    acc_cap = all_caps[cid]['accounting_capacity'] if cid in all_caps else 0
+                    
+                    # 判定: キャパが負荷を上回っていれば発表
+                    # 不足している場合、確率で遅延
+                    publish_prob = 1.0
+                    if load > 0 and acc_cap < load:
+                        publish_prob = max(0.1, acc_cap / load)
+                    
+                    # 締め後、翌週から発表可能。最大4週遅れると強制発表（ただし信頼失墜）
+                    weeks_since_close = week - draft_report['week']
+                    
+                    if weeks_since_close > 0:
+                        if random.random() < publish_prob or weeks_since_close >= 4:
+                            status = 'published'
+                            if weeks_since_close >= 2:
+                                status = 'delayed'
+                                accounting_penalty = 1.0 - (weeks_since_close * gb.REPORT_PUBLISH_DELAY_PENALTY)
+                                self.log_news(week, cid, f"決算発表を行いました (遅延: {weeks_since_close}週)", 'warning')
+                            else:
+                                self.log_news(week, cid, f"決算発表を行いました ({draft_report['period_str']})", 'info')
+                                
+                            cursor.execute("UPDATE financial_reports SET status = ?, published_week = ? WHERE id = ?", 
+                                           (status, week, draft_report['id']))
+                
+                # --- 3. 株価計算 (Valuation) ---
+                # 理論株価 = (EPS * PER + BPS * PBR) / 2
+                
+                # 予想EPS: 直近4週の利益 * 13 / 株式数
+                cursor.execute("""
+                    SELECT SUM(CASE WHEN category = 'revenue' THEN amount ELSE 0 END) - 
+                           SUM(CASE WHEN category NOT IN ('revenue', 'material', 'stock_purchase', 'facility_purchase', 'facility_sell') THEN amount ELSE 0 END) as profit
+                    FROM account_entries WHERE company_id = ? AND week >= ?
+                """, (cid, week - 4))
+                recent_profit = cursor.fetchone()['profit'] or 0
+                annual_profit_forecast = recent_profit * 13
+                
+                shares = comp['outstanding_shares']
+                eps = annual_profit_forecast / shares
+                
+                # BPS: 純資産 / 株式数
+                # 簡易計算: 資金 + (在庫 * 0.5) + (施設 * 0.8) - 負債
+                # ここでは comp['funds'] をベースに簡易化
+                bps = max(1, comp['funds'] / shares)
+                
+                # PER, PBR基準
+                target_per = gb.PER_BASE
+                target_pbr = gb.PBR_BASE + (comp['brand_power'] / 100.0) # ブランドプレミアム
+                
+                # 理論株価
+                theoretical_price = ((eps * target_per) + (bps * target_pbr)) / 2.0
+                theoretical_price = max(1, theoretical_price) # 1円以上
+                
+                # 現在株価からの遷移
+                current_price = comp['stock_price']
+                alpha = 0.2 # 織り込み係数
+                
+                # 変動
+                volatility = random.uniform(1.0 - gb.STOCK_VOLATILITY, 1.0 + gb.STOCK_VOLATILITY)
+                
+                new_price = int(((theoretical_price * alpha) + (current_price * (1 - alpha))) * volatility * accounting_penalty)
+                new_price = max(1, new_price)
+                
+                market_cap = new_price * shares
+                
+                # 更新
+                cursor.execute("UPDATE companies SET stock_price = ?, market_cap = ? WHERE id = ?", (new_price, market_cap, cid))
+                
+                # 履歴保存
+                real_per = new_price / eps if eps > 0 else 0
+                real_pbr = new_price / bps
+                cursor.execute("""
+                    INSERT INTO stock_history (week, company_id, stock_price, market_cap, eps, bps, per, pbr)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """, (week, cid, new_price, market_cap, eps, bps, real_per, real_pbr))

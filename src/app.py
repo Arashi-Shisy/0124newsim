@@ -679,6 +679,9 @@ def world():
     # 企業ランキング
     ranking = db.fetch_all("SELECT * FROM companies WHERE type != 'system_supplier' AND is_active = 1 ORDER BY funds DESC")
     
+    # 時価総額ランキング
+    market_cap_ranking = db.fetch_all("SELECT * FROM companies WHERE type != 'system_supplier' AND is_active = 1 ORDER BY market_cap DESC")
+    
     # 製品売上ランキング (直近週)
     product_ranking = db.fetch_all("""
         SELECT 
@@ -697,7 +700,7 @@ def world():
         LIMIT 10
     """, (target_week,))
     
-    return render_template('world.html', trends=trends, ranking=ranking, product_ranking=product_ranking, target_week=target_week)
+    return render_template('world.html', trends=trends, ranking=ranking, market_cap_ranking=market_cap_ranking, product_ranking=product_ranking, target_week=target_week)
 
 @app.route('/finance')
 def finance():
@@ -867,6 +870,32 @@ def company_detail(company_id):
     stats = db.fetch_one("SELECT * FROM weekly_stats WHERE company_id = ? AND week = ?", (company_id, current_week - 1))
     
     return render_template('detail_company.html', comp=comp, products=products, emp_count=emp_count, ceo=ceo, stats=stats)
+
+@app.route('/ir')
+def ir():
+    player = get_player_company()
+    current_week = sim.get_current_week()
+    
+    # 株価履歴
+    history = db.fetch_all("SELECT * FROM stock_history WHERE company_id = ? ORDER BY week ASC", (player['id'],))
+    
+    # 最新の指標
+    latest = history[-1] if history else None
+    
+    # 決算報告書
+    reports = db.fetch_all("SELECT * FROM financial_reports WHERE company_id = ? ORDER BY week DESC", (player['id'],))
+    
+    # 株主構成 (簡易表示)
+    shareholders = [
+        {'name': '創業者 (あなた)', 'shares': player['outstanding_shares'], 'ratio': 100.0}
+    ]
+    
+    return render_template('ir.html', 
+                           player=player, 
+                           history=history, 
+                           latest=latest, 
+                           reports=reports, 
+                           shareholders=shareholders)
 
 @app.route('/product/<int:design_id>')
 def product_detail(design_id):

@@ -55,7 +55,13 @@ class Database:
             -- Supplier Traits
             trait_material_score REAL DEFAULT 3.0,
             trait_cost_multiplier REAL DEFAULT 1.0,
-            part_category TEXT -- 'engine', 'body', etc. for system_supplier
+            part_category TEXT, -- 'engine', 'body', etc. for system_supplier
+            
+            -- Stock info
+            listing_status TEXT DEFAULT 'private', -- 'private', 'public'
+            stock_price INTEGER DEFAULT 50000,
+            outstanding_shares INTEGER DEFAULT 20000,
+            market_cap INTEGER DEFAULT 1000000000
         )
         """)
 
@@ -252,6 +258,38 @@ class Database:
             funds INTEGER DEFAULT 0,
             phase TEXT,
             PRIMARY KEY (week, company_id)
+        )
+        """)
+        
+        # 株価履歴
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS stock_history (
+            week INTEGER,
+            company_id INTEGER,
+            stock_price INTEGER,
+            market_cap INTEGER,
+            eps REAL,
+            bps REAL,
+            per REAL,
+            pbr REAL,
+            PRIMARY KEY (week, company_id)
+        )
+        """)
+
+        # 決算報告書
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS financial_reports (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            company_id INTEGER,
+            week INTEGER, -- 決算締め日
+            period_str TEXT, -- '2025 Q1' etc
+            revenue INTEGER,
+            net_profit INTEGER,
+            total_assets INTEGER,
+            net_assets INTEGER,
+            published_week INTEGER, -- 実際に発表された週
+            status TEXT, -- 'draft', 'published', 'delayed', 'corrected'
+            correction_flag BOOLEAN DEFAULT 0
         )
         """)
 

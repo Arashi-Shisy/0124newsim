@@ -16,6 +16,9 @@
                     {{ player.name if player else '自社名' }}
                     {% if player %}
                     <span style="font-size: 0.6em; color: #4db8ff; margin-left: 15px; font-weight: normal;">¥{{ "{:,}".format(player.funds|int) }}</span>
+                    {% if player.stock_price %}
+                    <span style="font-size: 0.6em; color: #b2ff59; margin-left: 10px; font-weight: normal;">株価: ¥{{ "{:,}".format(player.stock_price) }}</span>
+                    {% endif %}
                     {% endif %}
                 </h1>
                 
@@ -82,6 +85,7 @@
                 <a href="{{ url_for('pr') }}" class="{{ 'active' if active_page == 'pr' else '' }}">広報部</a>
                 <a href="{{ url_for('facility') }}" class="{{ 'active' if active_page == 'facility' else '' }}">施設</a>
                 <a href="{{ url_for('finance') }}" class="{{ 'active' if active_page == 'finance' else '' }}">財務</a>
+                <a href="{{ url_for('ir') }}" class="{{ 'active' if active_page == 'ir' else '' }}">IR</a>
                 <a href="{{ url_for('world') }}" class="{{ 'active' if active_page == 'world' else '' }}">世界</a>
             </nav>
             <div class="action-area">

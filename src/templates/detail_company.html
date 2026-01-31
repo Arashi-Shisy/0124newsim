@@ -16,6 +16,24 @@
                 <span class="label">資金</span>
                 <span class="value">¥{{ "{:,}".format(comp.funds|int) }}</span>
             </div>
+            {% if comp.stock_price %}
+            <div class="stat-row">
+                <span class="label">上場区分</span>
+                <span class="value">{{ '上場' if comp.listing_status == 'public' else '未上場' }}</span>
+            </div>
+            <div class="stat-row">
+                <span class="label">株価</span>
+                <span class="value">¥{{ "{:,}".format(comp.stock_price) }}</span>
+            </div>
+            <div class="stat-row">
+                <span class="label">発行済株式数</span>
+                <span class="value">{{ "{:,}".format(comp.outstanding_shares) }} 株</span>
+            </div>
+            <div class="stat-row">
+                <span class="label">時価総額</span>
+                <span class="value">¥{{ "{:,}".format(comp.market_cap) }}</span>
+            </div>
+            {% endif %}
             <div class="stat-row">
                 <span class="label">ブランド力</span>
                 <span class="value">{{ comp.brand_power|int }}</span>

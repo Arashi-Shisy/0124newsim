@@ -125,27 +125,27 @@ def run_seed():
     # 2. 企業作成
     # プレイヤー企業
     player_id = db.execute_query("""
-        INSERT INTO companies (name, type, funds) 
-        VALUES ('Player Corp', 'player', ?)
-    """, (gb.INITIAL_FUNDS_MAKER,))
+        INSERT INTO companies (name, type, funds, stock_price, outstanding_shares, market_cap, listing_status) 
+        VALUES ('Player Corp', 'player', ?, ?, ?, ?, 'private')
+    """, (gb.INITIAL_FUNDS_MAKER, gb.INITIAL_STOCK_PRICE, gb.INITIAL_SHARES, gb.INITIAL_STOCK_PRICE * gb.INITIAL_SHARES))
 
     # NPCメーカー
     npc_maker_ids = []
     for i in range(num_npc_makers):
         name = name_generator.generate_company_name('npc_maker')
         mid = db.execute_query("""
-            INSERT INTO companies (name, type, funds) 
-            VALUES (?, 'npc_maker', ?)
-        """, (name, gb.INITIAL_FUNDS_MAKER,))
+            INSERT INTO companies (name, type, funds, stock_price, outstanding_shares, market_cap, listing_status) 
+            VALUES (?, 'npc_maker', ?, ?, ?, ?, 'public')
+        """, (name, gb.INITIAL_FUNDS_MAKER, gb.INITIAL_STOCK_PRICE, gb.INITIAL_SHARES, gb.INITIAL_STOCK_PRICE * gb.INITIAL_SHARES))
         npc_maker_ids.append(mid)
 
     # NPC小売
     for i in range(num_npc_retailers):
         name = name_generator.generate_company_name('npc_retail')
         db.execute_query("""
-            INSERT INTO companies (name, type, funds) 
-            VALUES (?, 'npc_retail', ?)
-        """, (name, gb.INITIAL_FUNDS_RETAIL,))
+            INSERT INTO companies (name, type, funds, stock_price, outstanding_shares, market_cap, listing_status) 
+            VALUES (?, 'npc_retail', ?, ?, ?, ?, 'public')
+        """, (name, gb.INITIAL_FUNDS_RETAIL, gb.INITIAL_STOCK_PRICE, gb.INITIAL_SHARES, gb.INITIAL_STOCK_PRICE * gb.INITIAL_SHARES))
 
     # システムサプライヤー (各パーツごとに3社)
     supplier_templates = [

@@ -1,0 +1,144 @@
+<!-- c:\0124newSIm\src\templates\ir.html -->
+{% extends "base.html" %}
+
+{% block content %}
+<div class="dashboard-grid">
+    <!-- 株価情報 -->
+    <div class="card card-large">
+        <div class="card-header">
+            <h2>株価情報 (Stock Information)</h2>
+        </div>
+        <div class="card-body">
+            <div style="display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 20px;">
+                <div>
+                    <div style="font-size: 0.9em; color: var(--text-muted);">現在株価</div>
+                    <div style="font-size: 2.5em; font-weight: bold; color: #b2ff59;">¥{{ "{:,}".format(player.stock_price) }}</div>
+                </div>
+                <div style="text-align: right;">
+                    <div style="font-size: 0.9em; color: var(--text-muted);">時価総額</div>
+                    <div style="font-size: 1.5em; font-weight: bold;">¥{{ "{:,}".format(player.market_cap) }}</div>
+                </div>
+            </div>
+
+            <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; background: rgba(255,255,255,0.05); padding: 15px; border-radius: 8px;">
+                <div>
+                    <div style="font-size: 0.8em; color: var(--text-muted);">PER (株価収益率)</div>
+                    <div style="font-size: 1.2em; font-weight: bold;">{{ "{:.2f}".format(latest.per) if latest else '-' }} 倍</div>
+                </div>
+                <div>
+                    <div style="font-size: 0.8em; color: var(--text-muted);">PBR (株価純資産倍率)</div>
+                    <div style="font-size: 1.2em; font-weight: bold;">{{ "{:.2f}".format(latest.pbr) if latest else '-' }} 倍</div>
+                </div>
+                <div>
+                    <div style="font-size: 0.8em; color: var(--text-muted);">EPS (1株益)</div>
+                    <div style="font-size: 1.2em; font-weight: bold;">¥{{ "{:,.0f}".format(latest.eps) if latest else '-' }}</div>
+                </div>
+                <div>
+                    <div style="font-size: 0.8em; color: var(--text-muted);">BPS (1株純資産)</div>
+                    <div style="font-size: 1.2em; font-weight: bold;">¥{{ "{:,.0f}".format(latest.bps) if latest else '-' }}</div>
+                </div>
+            </div>
+            
+            <div style="margin-top: 20px;">
+                <h3 style="font-size: 1em; color: var(--text-muted); margin-bottom: 10px;">株価推移 (直近10週)</h3>
+                <div style="display: flex; align-items: flex-end; height: 100px; gap: 5px;">
+                    {% for h in history[-20:] %}
+                    <div style="flex: 1; background: #0f3460; height: {{ (h.stock_price / (player.stock_price * 1.5) * 100)|int }}%; min-height: 1px; position: relative;" title="Week {{ h.week }}: ¥{{ h.stock_price }}"></div>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 決算報告 -->
+    <div class="card card-large">
+        <div class="card-header">
+            <h2>決算報告 (Financial Reports)</h2>
+        </div>
+        <div class="card-body">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>期 (Period)</th>
+                        <th>売上高</th>
+                        <th>純利益</th>
+                        <th>純資産</th>
+                        <th>ステータス</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for report in reports %}
+                    <tr>
+                        <td>{{ report.period_str }}</td>
+                        <td>¥{{ "{:,}".format(report.revenue) }}</td>
+                        <td style="color: {{ '#4db8ff' if report.net_profit >= 0 else '#e94560' }};">¥{{ "{:,}".format(report.net_profit) }}</td>
+                        <td>¥{{ "{:,}".format(report.net_assets) }}</td>
+                        <td>
+                            {% if report.status == 'published' %}
+                                <span style="color: #4caf50;">発表済</span>
+                            {% elif report.status == 'delayed' %}
+                                <span style="color: #e94560; font-weight: bold;">遅延発表</span>
+                            {% elif report.status == 'draft' %}
+                                <span style="color: var(--text-muted);">集計中</span>
+                            {% else %}
+                                {{ report.status }}
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% else %}
+                    <tr><td colspan="5">決算データはまだありません。</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- 株主構成 -->
+    <div class="card">
+        <div class="card-header">
+            <h2>株主構成</h2>
+        </div>
+        <div class="card-body">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>株主名</th>
+                        <th>持株数</th>
+                        <th>比率</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for sh in shareholders %}
+                    <tr>
+                        <td>{{ sh.name }}</td>
+                        <td>{{ "{:,}".format(sh.shares) }}</td>
+                        <td>{{ "{:.1f}".format(sh.ratio) }}%</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    
+    <!-- 株式情報 -->
+    <div class="card">
+        <div class="card-header">
+            <h2>株式基本情報</h2>
+        </div>
+        <div class="card-body">
+            <div class="stat-row">
+                <span class="label">上場区分</span>
+                <span class="value">{{ '上場 (Public)' if player.listing_status == 'public' else '未上場 (Private)' }}</span>
+            </div>
+            <div class="stat-row">
+                <span class="label">発行済株式数</span>
+                <span class="value">{{ "{:,}".format(player.outstanding_shares) }} 株</span>
+            </div>
+            <div class="stat-row">
+                <span class="label">信用格付け</span>
+                <span class="value">{{ player.credit_rating }}</span>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

@@ -46,10 +46,40 @@
                     {% for comp in ranking %}
                     <tr>
                         <td>{{ loop.index }}</td>
-                        <td>{{ comp.name }}</td>
+                        <td><a href="{{ url_for('company_detail', company_id=comp.id) }}" style="color: #4db8ff;">{{ comp.name }}</a></td>
                         <td>{{ comp.type }}</td>
                         <td>¥{{ "{:,}".format(comp.funds|int) }}</td>
                         <td>{{ comp.brand_power|int }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <div class="card card-large">
+        <div class="card-header">
+            <h2>企業ランキング (時価総額順)</h2>
+        </div>
+        <div class="card-body">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>順位</th>
+                        <th>企業名</th>
+                        <th>タイプ</th>
+                        <th>時価総額</th>
+                        <th>株価</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for comp in market_cap_ranking %}
+                    <tr>
+                        <td>{{ loop.index }}</td>
+                        <td><a href="{{ url_for('company_detail', company_id=comp.id) }}" style="color: #4db8ff;">{{ comp.name }}</a></td>
+                        <td>{{ comp.type }}</td>
+                        <td>¥{{ "{:,}".format(comp.market_cap) }}</td>
+                        <td>¥{{ "{:,}".format(comp.stock_price) }}</td>
                     </tr>
                     {% endfor %}
                 </tbody>
