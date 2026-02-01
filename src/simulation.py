@@ -165,6 +165,7 @@ class Simulation:
             d_caps = caps['divisions'][div_id]
             d_limit = div_caps_limit[div_id]
             industry_key = div_map[div_id]['industry']
+            ind_def = gb.INDUSTRIES.get(industry_key, {})
             
             # 施設制限チェック
             # 工場
@@ -247,7 +248,8 @@ class Simulation:
             
             # 店舗スループット
             store_staff_count = len(d_staff[gb.DEPT_STORE])
-            d_caps['store_throughput'] = store_staff_count * gb.NPC_SCALE_FACTOR * gb.BASE_SALES_EFFICIENCY * (d_caps['store_ops'] / 50.0)
+            sales_eff = ind_def.get('sales_efficiency_base', gb.BASE_SALES_EFFICIENCY)
+            d_caps['store_throughput'] = store_staff_count * gb.NPC_SCALE_FACTOR * sales_eff * (d_caps['store_ops'] / 50.0)
             
             # 後方互換性のため、全社合計にも加算
             for k in ['production', 'development', 'sales', 'store_ops']:
@@ -272,9 +274,12 @@ class Simulation:
         # 1. 開発部 (Development)
         # 事業部ごとに計算
         for div_id, d_caps in caps['divisions'].items():
+            industry_key = div_map[div_id]['industry']
+            ind_def = gb.INDUSTRIES.get(industry_key, {})
+            dev_diff = ind_def.get('development_difficulty', 1.0)
             dev_projects = db.fetch_one("SELECT COUNT(*) as cnt FROM product_designs WHERE company_id = ? AND division_id = ? AND status = 'developing'", (company_id, div_id))
             dev_count = dev_projects['cnt'] if dev_projects else 0
-            req_dev = dev_count * gb.REQ_CAPACITY_DEV_PROJECT
+            req_dev = dev_count * gb.REQ_CAPACITY_DEV_PROJECT * dev_diff
             d_caps['requirements']['development'] = req_dev
             
             if req_dev > 0:
@@ -285,14 +290,30 @@ class Simulation:
 
         # 2. 営業部 (Sales)
         # 事業部ごとに計算
-        current_week = self.get_current_week()
-        # 統計データは全社合算なので、ここでは簡易的に在庫数から推測するか、全社一括で計算して配分する
-        # 今回は全社在庫数と取引数で計算し、各事業部の営業力に一律ペナルティを与える
-        prev_stats = db.fetch_one("SELECT b2b_sales, b2c_sales, inventory_count FROM weekly_stats WHERE company_id = ? AND week = ?", (company_id, current_week - 1))
-        tx_count = prev_stats['b2b_sales'] if prev_stats else 0
-        stock_count = prev_stats['inventory_count'] if prev_stats else 0
-        req_sales = (tx_count * gb.REQ_CAPACITY_SALES_TRANSACTION) + (stock_count * gb.REQ_CAPACITY_SALES_STOCK)
-        caps['requirements']['sales'] = req_sales
+        # 統計データ(weekly_stats)ではなく、実データから事業部ごとの負荷を計算する
+        prev_week = self.get_current_week() - 1
+        req_sales_total = 0
+        
+        for div_id, d_caps in caps['divisions'].items():
+            industry_key = div_map[div_id]['industry']
+            ind_def = gb.INDUSTRIES.get(industry_key, {})
+            stock_coeff = ind_def.get('stock_handling_coefficient', gb.REQ_CAPACITY_SALES_STOCK)
+            tx_coeff = ind_def.get('transaction_handling_coefficient', gb.REQ_CAPACITY_SALES_TRANSACTION)
+
+            # 在庫数
+            inv_res = db.fetch_one("SELECT SUM(quantity) as cnt FROM inventory WHERE company_id = ? AND division_id = ?", (company_id, div_id))
+            stock_count = inv_res['cnt'] or 0
+            
+            # 取引数 (前週)
+            tx_res = db.fetch_one("SELECT SUM(t.quantity) as cnt FROM transactions t JOIN product_designs d ON t.design_id = d.id WHERE (t.seller_id = ? OR t.buyer_id = ?) AND t.week = ? AND d.division_id = ?", (company_id, company_id, prev_week, div_id))
+            tx_count = tx_res['cnt'] or 0
+            
+            div_req = (tx_count * tx_coeff) + (stock_count * stock_coeff)
+            d_caps['requirements']['sales'] = div_req
+            req_sales_total += div_req
+
+        caps['requirements']['sales'] = req_sales_total
+        req_sales = req_sales_total
         
         # 全事業部の営業キャパ合計
         total_sales_cap = sum(d['sales_capacity'] for d in caps['divisions'].values())
@@ -333,9 +354,11 @@ class Simulation:
         # 5. 経理部 (Accounting)
         # 仕事量: 取引数 + 従業員数
         # process_stock_market のロジック参照
-        # 取引数は前週の実績を使用 (B2B + B2C)
-        b2c_count = prev_stats['b2c_sales'] if prev_stats else 0
-        total_tx = tx_count + b2c_count
+        # 取引数は前週の実績を使用 (Transactionsテーブルから件数を取得)
+        prev_week_acc = self.get_current_week() - 1
+        tx_res = db.fetch_one("SELECT COUNT(*) as cnt FROM transactions WHERE (seller_id = ? OR buyer_id = ?) AND week = ?", (company_id, company_id, prev_week_acc))
+        total_tx = tx_res['cnt'] if tx_res else 0
+        
         req_acc = (total_tx * gb.ACCOUNTING_LOAD_PER_TRANSACTION) + (total_employees * gb.ACCOUNTING_LOAD_PER_EMPLOYEE)
         caps['requirements']['accounting'] = int(req_acc)
 
@@ -417,7 +440,7 @@ class Simulation:
         # 市場のメーカー在庫 (小売の仕入れ判断用)
         # 修正: 在庫の所有者(i.company_id)がメーカーまたはプレイヤーであるものを対象とする
         maker_stocks = db.fetch_all("""
-            SELECT i.quantity, i.design_id, d.sales_price, d.concept_score, i.company_id as maker_id, c.brand_power
+            SELECT i.quantity, i.design_id, d.sales_price, d.base_price, d.concept_score, d.category_key, i.company_id as maker_id, c.brand_power
             FROM inventory i
             JOIN product_designs d ON i.design_id = d.id
             JOIN companies c ON i.company_id = c.id
@@ -703,7 +726,7 @@ class Simulation:
         retail_stocks = db.fetch_all("""
             SELECT i.id, i.company_id, i.division_id, i.quantity, i.sales_price as retail_price, i.design_id, d.name as product_name,
                    d.concept_score, d.base_price, d.sales_price as msrp, d.awareness, d.material_score, d.parts_config, d.category_key,
-                   c.brand_power as retail_brand, c.type as company_type,
+                   c.brand_power as retail_brand, c.type as company_type, m.orientation as maker_orientation,
                    m.brand_power as maker_brand, m.id as creator_id
             FROM inventory i
             JOIN product_designs d ON i.design_id = d.id
@@ -723,12 +746,18 @@ class Simulation:
             cat_key = cat['key']
             market_demand = cat['demand']
             
+            # 需要をセグメントに分割
+            demand_wealthy = int(market_demand * gb.MARKET_SEGMENT_WEALTHY_RATIO)
+            demand_mass = int(market_demand * gb.MARKET_SEGMENT_MASS_RATIO)
+            
             # このカテゴリの在庫のみ抽出
             cat_stocks = [s for s in retail_stocks if s['category_key'] == cat_key]
             if not cat_stocks: continue
 
             # スコアリング
-            scored_stocks = []
+            scored_stocks_wealthy = []
+            scored_stocks_mass = []
+            
             total_score = 0
             for stock in cat_stocks:
                 cid = stock['company_id']
@@ -742,57 +771,77 @@ class Simulation:
 
                 base_price = stock['base_price']
                 retail_price = stock['retail_price']
+                
+                # 価格比率 (高いか安いか)
                 price_ratio = retail_price / base_price if base_price > 0 else 1.0
-                price_factor = price_ratio ** 2
                 
                 trend_factor = random.uniform(0.8, 1.2)
                 prev_sold = prev_sales_map.get(stock['design_id'], 0)
                 bandwagon_bonus = 1.0 + (math.log1p(prev_sold) * 0.15)
-                preference_noise = random.gauss(1.0, 0.15)
                 
-                product_score = (stock['concept_score'] * stock['material_score'] * 
-                                (1 + stock['maker_brand'] / 100.0) * (1 + stock['awareness'] / 100.0)) / price_factor
+                # --- 富裕層向けスコア ---
+                # 価格感度低め、品質・ブランド重視
+                price_factor_w = price_ratio ** 0.5 # 価格が高くてもスコアがあまり落ちない
+                quality_score = stock['concept_score'] * stock['material_score']
+                brand_score = (1 + stock['maker_brand'] / 50.0) # ブランド影響大
                 
-                final_score = store_score * product_score * trend_factor * bandwagon_bonus * preference_noise
-                scored_stocks.append({**stock, 'score': final_score})
-                total_score += final_score
+                score_w = (quality_score * brand_score * (1 + stock['awareness'] / 100.0)) / price_factor_w
+                final_score_w = store_score * score_w * trend_factor * bandwagon_bonus * random.gauss(1.0, 0.1)
+                scored_stocks_wealthy.append({**stock, 'score': final_score_w})
+
+                # --- 一般層向けスコア ---
+                # 価格感度高め、コスパ重視
+                price_factor_m = price_ratio ** 3.0 # 価格が高いとスコア激減
+                # ブランド影響小
+                score_m = (quality_score * (1 + stock['maker_brand'] / 200.0) * (1 + stock['awareness'] / 100.0)) / price_factor_m
+                final_score_m = store_score * score_m * trend_factor * bandwagon_bonus * random.gauss(1.0, 0.1)
+                scored_stocks_mass.append({**stock, 'score': final_score_m})
+
+            # 需要分配処理 (共通関数化)
+            sales_record = {s['id']: 0 for s in cat_stocks}
             
-            # 需要分配
-            sales_record = {s['id']: 0 for s in scored_stocks}
-            remaining_demand = market_demand
-            
-            for _ in range(3):
-                if remaining_demand <= 0: break
-                
-                active_stocks = [s for s in scored_stocks if (s['quantity'] - sales_record[s['id']]) > 0 and comp_caps[s['company_id']]['store_throughput'] > 0]
-                if not active_stocks: break
-                
-                current_total_score = sum(s['score'] for s in active_stocks)
-                if current_total_score == 0: break
-                
-                round_demand = remaining_demand
-                remaining_demand = 0
-                
-                for stock in active_stocks:
-                    share = stock['score'] / current_total_score
-                    float_demand = round_demand * share
-                    demand = int(float_demand)
-                    if random.random() < (float_demand - demand): demand += 1
+            def distribute_demand(demand_pool, stock_list):
+                remaining = demand_pool
+                for _ in range(3): # 3 pass distribution
+                    if remaining <= 0: break
                     
-                    current_qty = stock['quantity'] - sales_record[stock['id']]
-                    cap_float = comp_caps[stock['company_id']]['store_throughput']
-                    capacity = int(cap_float)
-                    if random.random() < (cap_float - capacity): capacity += 1
+                    # 販売可能在庫の抽出 (在庫あり & 店舗キャパあり)
+                    active = [s for s in stock_list if (s['quantity'] - sales_record[s['id']]) > 0 and comp_caps[s['company_id']]['store_throughput'] > 0]
+                    if not active: break
                     
-                    sold = min(demand, current_qty, capacity)
-                    sold = int(sold)
+                    total_s = sum(s['score'] for s in active)
+                    if total_s == 0: break
                     
-                    if sold > 0:
-                        sales_record[stock['id']] += sold
-                        comp_caps[stock['company_id']]['store_throughput'] -= sold
+                    round_d = remaining
+                    remaining = 0
                     
-                    if demand > sold:
-                        remaining_demand += (demand - sold)
+                    for stock in active:
+                        share = stock['score'] / total_s
+                        float_d = round_d * share
+                        d_int = int(float_d)
+                        if random.random() < (float_d - d_int): d_int += 1
+                        
+                        current_qty = stock['quantity'] - sales_record[stock['id']]
+                        
+                        # 店舗キャパシティチェック
+                        cap_float = comp_caps[stock['company_id']]['store_throughput']
+                        capacity = int(cap_float)
+                        if random.random() < (cap_float - capacity): capacity += 1
+                        
+                        sold = min(d_int, current_qty, capacity)
+                        sold = int(sold)
+                        
+                        if sold > 0:
+                            sales_record[stock['id']] += sold
+                            comp_caps[stock['company_id']]['store_throughput'] -= sold
+                        
+                        if d_int > sold:
+                            remaining += (d_int - sold)
+
+            # 富裕層需要の分配
+            distribute_demand(demand_wealthy, scored_stocks_wealthy)
+            # 一般層需要の分配
+            distribute_demand(demand_mass, scored_stocks_mass)
             
             # DB更新用リストに追加 (カテゴリごとの結果を統合)
             # (ループ外で定義したリストに追加していく処理は元のコードと同じ構造にするため省略し、
@@ -802,7 +851,9 @@ class Simulation:
             if 'all_sales_record' not in locals(): all_sales_record = {}
             all_sales_record.update(sales_record)
             if 'all_scored_stocks' not in locals(): all_scored_stocks = []
-            all_scored_stocks.extend(scored_stocks)
+            # ログ出力用にリストを保持 (重複除去が必要だが、sales_recordがIDベースなので更新処理は問題ない)
+            # ここでは単純に全在庫リストを対象にする
+            all_scored_stocks.extend(cat_stocks)
 
         # DB更新とログ記録
         # executemany用にデータを準備
@@ -813,7 +864,12 @@ class Simulation:
         insert_cogs = []
         b2c_sales_counts = {} # {company_id: count}
 
+        # 重複を除去して処理
+        processed_ids = set()
         for stock in all_scored_stocks:
+            if stock['id'] in processed_ids: continue
+            processed_ids.add(stock['id'])
+            
             sold = all_sales_record.get(stock['id'], 0)
             if sold > 0:
                 # ★バグ修正: 収益と原価を正しく計上する
@@ -847,8 +903,8 @@ class Simulation:
                 cursor.executemany("INSERT INTO account_entries (week, company_id, category, amount) VALUES (?, ?, ?, ?)", insert_cogs)
         
         # ログ出力
-        for stock in scored_stocks:
-            sold = sales_record[stock['id']]
+        for stock in all_scored_stocks:
+            sold = all_sales_record.get(stock['id'], 0)
             if sold > 0:
                 db.log_file_event(week, stock['company_id'], "Retail Sales", f"Sold {sold} units of {stock['product_name']}")
         
@@ -1200,12 +1256,14 @@ class Simulation:
 
             # 開発期間の取得 (カテゴリ依存)
             duration = 26 # Default fallback
+            markup_modifier = 1.0 # Default
             if proj['division_id'] and proj['category_key']:
                 div = db.fetch_one("SELECT industry_key FROM divisions WHERE id = ?", (proj['division_id'],))
                 if div:
                     ind_key = div['industry_key']
                     cat_key = proj['category_key']
                     if ind_key in gb.INDUSTRIES and cat_key in gb.INDUSTRIES[ind_key]['categories']:
+                        markup_modifier = gb.INDUSTRIES[ind_key].get('price_markup_modifier', 1.0)
                         duration = gb.INDUSTRIES[ind_key]['categories'][cat_key]['development_duration']
 
             if week - current_start_week >= duration:
@@ -1248,7 +1306,8 @@ class Simulation:
                 
                 # 基準価格 (Base Price): 顧客が感じる価値の金銭換算
                 # 材料費 * (品質スコア + コンセプトスコア) / 2 程度をベースにする
-                base_price = int(material_cost * ((final_concept + 3.0) / 2.0))
+                # 業界ごとのマージン補正を適用 (家電は安くなる)
+                base_price = int(material_cost * ((final_concept + 3.0) / 2.0) * markup_modifier)
                 
                 # メーカー希望小売価格 (MSRP): 原価 + 利益 + マージン
                 # 原価の約2倍程度を定価とする

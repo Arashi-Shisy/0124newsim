@@ -48,6 +48,7 @@ class Database:
             funds INTEGER,
             brand_power REAL DEFAULT 0,
             industry TEXT DEFAULT 'automotive',
+            orientation TEXT DEFAULT 'standard', -- 'luxury', 'value', 'standard'
             credit_rating INTEGER DEFAULT 50,
             dev_knowhow REAL DEFAULT 0,
             borrowing_limit INTEGER DEFAULT 0,

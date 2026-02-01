@@ -139,7 +139,7 @@ def run_report():
     try:
         # 企業名も含めて取得
         details = db.fetch_all("""
-            SELECT w.*, c.name as company_name 
+            SELECT w.*, c.name as company_name, c.industry, c.orientation
             FROM weekly_stats w 
             JOIN companies c ON w.company_id = c.id 
             WHERE c.type != 'system_supplier'
@@ -153,6 +153,8 @@ def run_report():
                     "week": "週",
                     "company_id": "企業ID",
                     "company_name": "企業名",
+                    "industry": "業界",
+                    "orientation": "経営方針",
                     "phase": "フェーズ",
                     "total_revenue": "売上高",
                     "total_expenses": "費用計",
@@ -200,8 +202,8 @@ def run_report():
 
     try:
         # 企業名マップ
-        companies = db.fetch_all("SELECT id, name FROM companies")
-        company_map = {c['id']: c['name'] for c in companies}
+        companies = db.fetch_all("SELECT id, name, industry, orientation FROM companies")
+        company_map = {c['id']: {'name': c['name'], 'industry': c['industry'], 'orientation': c['orientation']} for c in companies}
 
         # フェーズ情報の取得
         phases = db.fetch_all("SELECT week, company_id, phase FROM weekly_stats")
@@ -232,7 +234,8 @@ def run_report():
         with open(pl_output_path, 'w', newline='', encoding='utf-8-sig') as f:
             # カラム定義
             header_map = {
-                "week": "週", "company_id": "企業ID", "company_name": "企業名", "phase": "フェーズ",
+                "week": "週", "company_id": "企業ID", "company_name": "企業名", 
+                "industry": "業界", "orientation": "経営方針", "phase": "フェーズ",
                 "revenue": "売上高", 
                 "cogs": "売上原価", "cogs_ratio": "原価率",
                 "gross_profit": "売上総利益", "gross_profit_ratio": "粗利率",
@@ -250,7 +253,7 @@ def run_report():
             
             # 出力するカラムの順序
             field_order = [
-                "week", "company_id", "company_name", "phase",
+                "week", "company_id", "company_name", "industry", "orientation", "phase",
                 "revenue", 
                 "cogs", "cogs_ratio",
                 "gross_profit", "gross_profit_ratio",
@@ -290,7 +293,10 @@ def run_report():
                     # Rowデータ作成
                     row["week"] = w
                     row["company_id"] = cid
-                    row["company_name"] = company_map.get(cid, "Unknown")
+                    comp_info = company_map.get(cid, {'name': "Unknown", 'industry': "-", 'orientation': "-"})
+                    row["company_name"] = comp_info['name']
+                    row["industry"] = comp_info['industry']
+                    row["orientation"] = comp_info['orientation']
                     row["phase"] = phase_map.get((w, cid), "-")
                     row["revenue"] = revenue
                     row["cogs"] = cogs

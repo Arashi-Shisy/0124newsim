@@ -20,14 +20,24 @@ INITIAL_FUNDS_RETAIL = 1000000000   # 50億円
 MAKER_UNIT_SALES_PRICE = 2700000   # メーカー -> 小売
 RETAIL_UNIT_SALES_PRICE_BASE = 3000000 # 小売 -> 顧客（基準）
 
+# 市場セグメント設定
+MARKET_SEGMENT_WEALTHY_RATIO = 0.2 # 富裕層の割合 (20%)
+MARKET_SEGMENT_MASS_RATIO = 0.8    # 一般層の割合 (80%)
+
 # 業界コスト構造 (1台あたり)
 INDUSTRIES = {
     "automotive": {
         "name": "自動車業界",
+        "price_markup_modifier": 1.0, # 標準マージン
+        "sales_efficiency_base": 2.0, # 1人あたり週2台販売
+        "stock_handling_coefficient": 0.1, # 在庫1台あたり0.1キャパ(営業)
+        "transaction_handling_coefficient": 20.0, # 取引1台あたり20キャパ(営業)
+        "development_difficulty": 1.0, # 開発難易度係数 (基準2000)
         "categories": {
             "sedan": {
                 "name": "セダン",
                 "base_demand": 600, # 週次需要
+                "production_efficiency_base": 0.27, # 1人週あたりの生産台数
                 "development_duration": 48, # 開発期間(週): 長め
                 "parts": [
                     {"key": "engine", "label": "エンジン", "base_cost": 240000},
@@ -42,6 +52,7 @@ INDUSTRIES = {
             "suv": {
                 "name": "SUV",
                 "base_demand": 1200,
+                "production_efficiency_base": 0.25,
                 "development_duration": 52,
                 "parts": [
                     {"key": "engine_high_power", "label": "高出力エンジン", "base_cost": 350000},
@@ -56,6 +67,7 @@ INDUSTRIES = {
             "compact": {
                 "name": "コンパクトカー",
                 "base_demand": 1500,
+                "production_efficiency_base": 0.35,
                 "development_duration": 40,
                 "parts": [
                     {"key": "engine_small", "label": "小型エンジン", "base_cost": 150000},
@@ -70,6 +82,7 @@ INDUSTRIES = {
             "sports": {
                 "name": "スポーツカー",
                 "base_demand": 200,
+                "production_efficiency_base": 0.20,
                 "development_duration": 60,
                 "parts": [
                     {"key": "engine_sport", "label": "スポーツエンジン", "base_cost": 500000},
@@ -85,11 +98,17 @@ INDUSTRIES = {
     },
     "home_appliances": { # 新規追加
         "name": "家電業界",
+        "price_markup_modifier": 0.6, # 薄利多売 (マージンを削る)
+        "sales_efficiency_base": 20.0, # 1人あたり週20台販売
+        "stock_handling_coefficient": 0.01, # 在庫1台あたり0.01キャパ
+        "transaction_handling_coefficient": 2.0, # 取引1台あたり2キャパ
+        "development_difficulty": 0.5, # 開発難易度半分 (基準1000)
         "categories": {
             # 家電業界全体で自動車の約10倍の需要(10,000台)になるようカテゴリで配分
             "washing_machine": {
                 "name": "洗濯機",
-                "base_demand": 3000,
+                "base_demand": 8000,
+                "production_efficiency_base": 5.0, # 自動車よりはるかに作りやすい
                 "development_duration": 13, # 要件: 3ヶ月 (13週)
                 "parts": [
                     {"key": "motor", "label": "モーター", "base_cost": 5000},
@@ -99,7 +118,8 @@ INDUSTRIES = {
             },
             "refrigerator": {
                 "name": "冷蔵庫",
-                "base_demand": 4000,
+                "base_demand": 10000,
+                "production_efficiency_base": 4.0,
                 "development_duration": 16,
                 "parts": [
                     {"key": "compressor", "label": "コンプレッサー", "base_cost": 8000},
@@ -110,7 +130,8 @@ INDUSTRIES = {
             },
             "tv": {
                 "name": "テレビ",
-                "base_demand": 5000,
+                "base_demand": 15000,
+                "production_efficiency_base": 6.0,
                 "development_duration": 12,
                 "parts": [
                     {"key": "display_panel", "label": "液晶パネル", "base_cost": 15000},
@@ -121,7 +142,8 @@ INDUSTRIES = {
             },
             "ac": {
                 "name": "エアコン",
-                "base_demand": 2500,
+                "base_demand": 7000,
+                "production_efficiency_base": 4.5,
                 "development_duration": 14,
                 "parts": [
                     {"key": "compressor", "label": "コンプレッサー", "base_cost": 7000},
@@ -132,7 +154,8 @@ INDUSTRIES = {
             },
             "microwave": {
                 "name": "電子レンジ",
-                "base_demand": 3500,
+                "base_demand": 9000,
+                "production_efficiency_base": 8.0,
                 "development_duration": 10,
                 "parts": [
                     {"key": "magnetron", "label": "マグネトロン", "base_cost": 3000},

@@ -17,6 +17,18 @@
                 <span class="value">{{ industries[comp.industry].name if comp.industry in industries else comp.industry }}</span>
             </div>
             <div class="stat-row">
+                <span class="label">経営方針</span>
+                <span class="value">
+                    {% if comp.orientation == 'luxury' %}
+                    <span style="color: #ffd700;">高級路線 (Luxury)</span>
+                    {% elif comp.orientation == 'value' %}
+                    <span style="color: #4caf50;">廉価路線 (Value)</span>
+                    {% else %}
+                    標準 (Standard)
+                    {% endif %}
+                </span>
+            </div>
+            <div class="stat-row">
                 <span class="label">資金</span>
                 <span class="value">¥{{ "{:,}".format(comp.funds|int) }}</span>
             </div>

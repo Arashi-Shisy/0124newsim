@@ -119,23 +119,41 @@ def run_seed():
     # 1. ゲーム状態初期化
     db.execute_query("INSERT INTO game_state (week, economic_index) VALUES (1, 1.0)")
 
-    # 市場規模に応じた生成数の計算
-    demand = gb.BASE_MARKET_DEMAND
+    # 業界ごとの需要合計を計算
+    industry_demands = {}
+    total_world_demand = 0
+    for ind_key, ind_val in gb.INDUSTRIES.items():
+        d = sum(cat['base_demand'] for cat in ind_val['categories'].values())
+        industry_demands[ind_key] = d
+        total_world_demand += d
     
-    # 企業数: 需要200台につきメーカー1社、100台につき小売1社 (最低数は確保)
-    num_npc_makers = 8 # 競合を増やして難易度アップ
+    # メーカー総数 (市場規模に合わせて設定)
+    total_makers = 14
     num_npc_retailers = 3
     
-    # メーカーシェア配分 (Power Law的分布)
-    # 業界の階層構造を再現 (リーダー、チャレンジャー、フォロワー、ニッチ)
-    maker_shares = [0.30, 0.20, 0.15, 0.10, 0.08, 0.07, 0.05, 0.05]
-    random.shuffle(maker_shares) # ランダムに割り当て
+    # 割り当て数計算 (最低2社保証)
+    industry_counts = {k: 2 for k in industry_demands.keys()}
+    remaining_slots = total_makers - sum(industry_counts.values())
     
-    # 業界定義の取得
-    auto_ind = gb.INDUSTRIES['automotive']
-    home_ind = gb.INDUSTRIES['home_appliances']
-    auto_cat = list(auto_ind['categories'].keys())[0] # sedan
-    home_cat = list(home_ind['categories'].keys())[0] # washing_machine (簡易)
+    if remaining_slots > 0:
+        # 需要比率に基づいて残りを配分
+        allocations = {}
+        for k, d in industry_demands.items():
+            allocations[k] = (d / total_world_demand) * remaining_slots
+        
+        # 整数部を加算
+        for k in allocations:
+            count = int(allocations[k])
+            industry_counts[k] += count
+            allocations[k] -= count # 小数部を残す
+            
+        # 端数を小数部の大きい順に割り当て
+        remaining_slots = total_makers - sum(industry_counts.values())
+        sorted_keys = sorted(allocations.keys(), key=lambda k: allocations[k], reverse=True)
+        for i in range(remaining_slots):
+            industry_counts[sorted_keys[i % len(sorted_keys)]] += 1
+            
+    print(f"Industry Maker Counts: {industry_counts}")
     
     # 2. 企業作成
     # プレイヤー企業
@@ -151,27 +169,69 @@ def run_seed():
     # NPCメーカー
     npc_maker_ids = []
     maker_share_map = {} # id -> share_qty
-    
-    for i in range(num_npc_makers):
-        name = name_generator.generate_company_name('npc_maker')
-        mid = db.execute_query("""
-            INSERT INTO companies (name, type, funds, stock_price, outstanding_shares, market_cap, listing_status) 
-            VALUES (?, 'npc_maker', ?, ?, ?, ?, 'public')
-        """, (name, gb.INITIAL_FUNDS_MAKER, gb.INITIAL_STOCK_PRICE, gb.INITIAL_SHARES, gb.INITIAL_STOCK_PRICE * gb.INITIAL_SHARES))
-        npc_maker_ids.append(mid)
+
+    # シェア分布のベース (Power Law)
+    base_shares_dist = [0.25, 0.20, 0.15, 0.12, 0.10, 0.08, 0.05, 0.03, 0.02]
+
+    for ind_key, count in industry_counts.items():
+        # この業界のシェア配分を決定
+        if count > len(base_shares_dist):
+            shares = base_shares_dist + [0.01] * (count - len(base_shares_dist))
+        else:
+            shares = base_shares_dist[:count]
         
-        share_pct = maker_shares[i] if i < len(maker_shares) else 0.05
-        maker_share_map[mid] = demand * share_pct
+        # 正規化
+        total_s = sum(shares)
+        shares = [s / total_s for s in shares]
+        
+        # シェア順に企業生成
+        for i, share in enumerate(shares):
+            name = name_generator.generate_company_name('npc_maker')
+            
+            # 経営方針の決定 (上位はLuxury/Standard寄り、下位はValue/Niche寄り)
+            if i == 0: # Top share
+                orientation = random.choice(['standard', 'luxury'])
+            elif i < count / 2:
+                orientation = random.choice(['standard', 'value'])
+            else:
+                orientation = random.choice(['value', 'standard'])
+            
+            # 初期資金 (シェアに応じて傾斜)
+            funds = int(gb.INITIAL_FUNDS_MAKER * (share / 0.1))
+            # ブランド力
+            brand_power = int(50 * (share / 0.1))
+            brand_power = min(100, max(10, brand_power))
+
+            mid = db.execute_query("""
+                INSERT INTO companies (name, type, funds, stock_price, outstanding_shares, market_cap, listing_status, orientation, industry, brand_power) 
+                VALUES (?, 'npc_maker', ?, ?, ?, ?, 'public', ?, ?, ?)
+            """, (name, funds, gb.INITIAL_STOCK_PRICE, gb.INITIAL_SHARES, gb.INITIAL_STOCK_PRICE * gb.INITIAL_SHARES, orientation, ind_key, brand_power))
+            npc_maker_ids.append(mid)
+            
+            # シェアに基づく需要数
+            maker_share_map[mid] = industry_demands[ind_key] * share
 
     # NPC小売
     npc_retail_ids = []
-    for i in range(num_npc_retailers):
-        name = name_generator.generate_company_name('npc_retail')
-        rid = db.execute_query("""
-            INSERT INTO companies (name, type, funds, stock_price, outstanding_shares, market_cap, listing_status) 
-            VALUES (?, 'npc_retail', ?, ?, ?, ?, 'public')
-        """, (name, gb.INITIAL_FUNDS_RETAIL, gb.INITIAL_STOCK_PRICE, gb.INITIAL_SHARES, gb.INITIAL_STOCK_PRICE * gb.INITIAL_SHARES))
-        npc_retail_ids.append(rid)
+    retail_share_map = {} # id -> share_qty
+
+    # 小売は各業界3社ずつ (需要をちょうど満たす規模で)
+    retail_counts = {k: 3 for k in industry_demands.keys()}
+
+    for ind_key, count in retail_counts.items():
+        # 均等割り (小売は地域独占的な側面もあるため簡易的に)
+        share_per_company = 1.0 / count
+        
+        for _ in range(count):
+            name = name_generator.generate_company_name('npc_retail')
+            orientation = random.choice(['standard', 'value'])
+            
+            rid = db.execute_query("""
+                INSERT INTO companies (name, type, funds, stock_price, outstanding_shares, market_cap, listing_status, orientation, industry) 
+                VALUES (?, 'npc_retail', ?, ?, ?, ?, 'public', ?, ?)
+            """, (name, gb.INITIAL_FUNDS_RETAIL, gb.INITIAL_STOCK_PRICE, gb.INITIAL_SHARES, gb.INITIAL_STOCK_PRICE * gb.INITIAL_SHARES, orientation, ind_key))
+            npc_retail_ids.append(rid)
+            retail_share_map[rid] = industry_demands[ind_key] * share_per_company
 
     # システムサプライヤー (各パーツごとに3社)
     supplier_templates = [
@@ -202,8 +262,6 @@ def run_seed():
     # 小売 (NPC Retailers) - 上記で生成したIDリストを使用
     retail_ids = npc_retail_ids
     
-    retail_share = demand / len(retail_ids)
-
     # 施設生成用の集計
     total_factory_needs = 0
     total_store_needs = 0
@@ -211,14 +269,21 @@ def run_seed():
     company_facilities_req = {} # {company_id: {factory: 0, store: 0, office: 0}}
     company_div_map = {} # {company_id: division_id} 施設紐付け用
     
-    def add_employees(company_id, division_id, c_type, share):
+    def add_employees(company_id, division_id, c_type, share, industry_key='automotive'):
         # 部署ごとの必要人数 (要件定義のコスト構造に基づく)
         staff_req = {}
         if c_type == 'maker':
+            # 業界の平均生産効率を取得
+            avg_efficiency = gb.BASE_PRODUCTION_EFFICIENCY
+            if industry_key in gb.INDUSTRIES:
+                 cats = gb.INDUSTRIES[industry_key]['categories']
+                 effs = [c.get('production_efficiency_base', gb.BASE_PRODUCTION_EFFICIENCY) for c in cats.values()]
+                 if effs:
+                     avg_efficiency = sum(effs) / len(effs)
+
             # 生産能力: 初期NPCの能力値(平均30程度)が基準(50)より低いため、実効効率は0.6倍程度になる。
             # 競争を発生させるため、実効供給力が需要を上回るように係数を強化する (1.5 -> 2.5)
-            # 1人あたり生産効率: gb.BASE_PRODUCTION_EFFICIENCY
-            needed_prod = (share * 2.5) / gb.BASE_PRODUCTION_EFFICIENCY
+            needed_prod = (share * 2.5) / avg_efficiency
             staff_req[gb.DEPT_PRODUCTION] = max(1, int(needed_prod * 1.2 / gb.NPC_SCALE_FACTOR))
             
             # 他部署は生産人員に対する比率で設定
@@ -231,8 +296,13 @@ def run_seed():
             total_others = sum(staff_req.values()) * gb.NPC_SCALE_FACTOR
             staff_req[gb.DEPT_HR] = max(1, int((total_others / gb.HR_CAPACITY_PER_PERSON) * 1.5 / gb.NPC_SCALE_FACTOR))
         else:
-            # 店舗能力: 同様に初期能力不足を考慮して強化 (1.0 -> 2.5)
-            needed_store = (share * 2.5) / gb.BASE_SALES_EFFICIENCY
+            # 業界の販売効率を取得
+            sales_efficiency = gb.BASE_SALES_EFFICIENCY
+            if industry_key in gb.INDUSTRIES:
+                sales_efficiency = gb.INDUSTRIES[industry_key].get('sales_efficiency_base', gb.BASE_SALES_EFFICIENCY)
+
+            # 店舗能力: 初期能力不足を考慮して強化 (1.0 -> 2.0) - 3社でちょうど需要を満たす調整
+            needed_store = (share * 2.0) / sales_efficiency
             staff_req[gb.DEPT_STORE] = max(1, int(needed_store * 1.2 / gb.NPC_SCALE_FACTOR))
             
             # 他部署
@@ -279,25 +349,31 @@ def run_seed():
 
     print("Generating Employees...")
     for mid in maker_ids:
-        # NPCメーカーは自動車専業とする
-        div_id = db.execute_query("INSERT INTO divisions (company_id, name, industry_key) VALUES (?, ?, ?)", (mid, "自動車事業部", "automotive"))
-        demand_qty = maker_share_map.get(mid, demand / len(maker_ids))
-        req = add_employees(mid, div_id, 'maker', demand_qty)
+        # 企業の業界を取得
+        comp_info = db.fetch_one("SELECT industry FROM companies WHERE id = ?", (mid,))
+        ind_key = comp_info['industry']
+        ind_name = gb.INDUSTRIES[ind_key]['name']
+        
+        div_id = db.execute_query("INSERT INTO divisions (company_id, name, industry_key) VALUES (?, ?, ?)", (mid, f"{ind_name}事業部", ind_key))
+        demand_qty = maker_share_map.get(mid, 100)
+        req = add_employees(mid, div_id, 'maker', demand_qty, industry_key=ind_key)
         company_div_map[mid] = div_id
         total_factory_needs += req['factory']
         total_office_needs += req['office']
 
     for rid in retail_ids:
         # 小売にも事業部を作成 (販売事業部)
-        div_id = db.execute_query("INSERT INTO divisions (company_id, name, industry_key) VALUES (?, ?, ?)", (rid, "販売事業部", "automotive"))
-        req = add_employees(rid, div_id, 'retail', retail_share)
+        comp_info = db.fetch_one("SELECT industry FROM companies WHERE id = ?", (rid,))
+        ind_key = comp_info['industry']
+        div_id = db.execute_query("INSERT INTO divisions (company_id, name, industry_key) VALUES (?, ?, ?)", (rid, "販売事業部", ind_key))
+        req = add_employees(rid, div_id, 'retail', retail_share_map[rid], industry_key=ind_key)
         company_div_map[rid] = div_id
         total_store_needs += req['store']
         total_office_needs += req['office']
 
     # 失業者生成 (全体失業率5% -> 雇用者数 / 0.95 = 全体数)
     employed_count = len(npc_data_list)
-    total_population = int(employed_count / 0.7)
+    total_population = int(employed_count / 0.95)
     unemployed_count = total_population - employed_count
     
     print(f"Employed: {employed_count}, Unemployed: {unemployed_count}, Total: {total_population}")
@@ -324,66 +400,116 @@ def run_seed():
 
     # 4. 初期商品設計書 (各NPCメーカー)
     # 標準的なパーツ構成を作成
-    # 自動車(Sedan)用
-    model_t_parts = {}
-    for part in auto_ind['categories'][auto_cat]['parts']:
-        # Standard Materials Inc. を探す
-        supplier = db.fetch_one("""
-            SELECT id, trait_material_score, trait_cost_multiplier 
-            FROM companies 
-            WHERE type='system_supplier' AND part_category=? AND trait_material_score=3.0
-        """, (part['key'],))
+    # 各業界の代表カテゴリ（最初のカテゴリ）のテンプレートを作成
+    industry_templates = {}
+    
+    for ind_key, ind_val in gb.INDUSTRIES.items():
+        # 最初のカテゴリを取得
+        first_cat_key = list(ind_val['categories'].keys())[0]
+        cat_def = ind_val['categories'][first_cat_key]
+        markup_modifier = ind_val.get('price_markup_modifier', 1.0)
         
-        model_t_parts[part['key']] = {
-            "supplier_id": supplier['id'],
-            "score": supplier['trait_material_score'],
-            "cost": int(part['base_cost'] * supplier['trait_cost_multiplier'])
+        parts_config = {}
+        total_material_cost = 0
+        
+        for part in cat_def['parts']:
+            # Standard Materials Inc. (score=3.0) を探す
+            supplier = db.fetch_one("""
+                SELECT id, trait_material_score, trait_cost_multiplier 
+                FROM companies 
+                WHERE type='system_supplier' AND part_category=? AND trait_material_score=3.0
+            """, (part['key'],))
+            
+            # 見つからなければ適当なものを
+            if not supplier:
+                supplier = db.fetch_one("SELECT id, trait_material_score, trait_cost_multiplier FROM companies WHERE type='system_supplier' AND part_category=? LIMIT 1", (part['key'],))
+            
+            if supplier:
+                cost = int(part['base_cost'] * supplier['trait_cost_multiplier'])
+                parts_config[part['key']] = {
+                    "supplier_id": supplier['id'],
+                    "score": supplier['trait_material_score'],
+                    "cost": cost
+                }
+                total_material_cost += cost
+        
+        # 基準価格
+        base_price = int(total_material_cost * ((3.0 + 3.0) / 2.0) * markup_modifier) # concept=3.0
+        
+        industry_templates[ind_key] = {
+            'cat_key': first_cat_key,
+            'parts_config': json.dumps(parts_config),
+            'base_price': base_price
         }
-
-    # 初期モデルの基準価格を、開発完了時と同じロジックで計算
-    initial_material_cost = sum(p['cost'] for p in model_t_parts.values())
-    initial_concept_score = 3.0
-    initial_base_price = int(initial_material_cost * ((initial_concept_score + 3.0) / 2.0))
 
     # 全メーカー（プレイヤー含む）に設計書と在庫を付与
     maker_design_map = {} # {maker_id: design_id} 小売在庫生成用
 
     for mid in maker_ids:
-        div_id = db.fetch_one("SELECT id FROM divisions WHERE company_id = ?", (mid,))['id']
+        div_id = company_div_map[mid]
+        comp_info = db.fetch_one("SELECT industry FROM companies WHERE id = ?", (mid,))
+        ind_key = comp_info['industry']
+        template = industry_templates.get(ind_key)
+
+        if not template: continue
+
         p_name = name_generator.generate_product_name()
         design_id = db.execute_query("""
             INSERT INTO product_designs (company_id, division_id, category_key, name, material_score, concept_score, production_efficiency, base_price, sales_price, status, developed_week, parts_config)
             VALUES (?, ?, ?, ?, 3.0, 3.0, 1.0, ?, ?, 'completed', 0, ?)
-        """, (mid, div_id, auto_cat, p_name, initial_base_price, initial_base_price, json.dumps(model_t_parts)))
+        """, (mid, div_id, template['cat_key'], p_name, template['base_price'], template['base_price'], template['parts_config']))
         maker_design_map[mid] = design_id
 
         # 5. 初期在庫
-        demand_qty = maker_share_map.get(mid, demand / len(maker_ids))
+        demand_qty = maker_share_map.get(mid, 100)
         initial_stock = int(demand_qty * 2)
-        db.execute_query("INSERT INTO inventory (company_id, division_id, design_id, quantity, sales_price) VALUES (?, ?, ?, ?, ?)", (mid, div_id, design_id, initial_stock, initial_base_price))
+        db.execute_query("INSERT INTO inventory (company_id, division_id, design_id, quantity, sales_price) VALUES (?, ?, ?, ?, ?)", (mid, div_id, design_id, initial_stock, template['base_price']))
 
     # プレイヤー企業用: 初期設計書のみ付与 (在庫なし)
     # これにより、ゲーム開始直後から生産活動が可能になる
-    p_name = name_generator.generate_product_name()
+    # 自動車
+    t_auto = industry_templates['automotive']
+    p_name_auto = name_generator.generate_product_name()
     db.execute_query("""
         INSERT INTO product_designs (company_id, division_id, category_key, name, material_score, concept_score, production_efficiency, base_price, sales_price, status, developed_week, parts_config)
         VALUES (?, ?, ?, ?, 3.0, 3.0, 1.0, ?, ?, 'completed', 0, ?)
-    """, (player_id, p_div_auto, auto_cat, p_name, initial_base_price, initial_base_price, json.dumps(model_t_parts)))
+    """, (player_id, p_div_auto, t_auto['cat_key'], p_name_auto, t_auto['base_price'], t_auto['base_price'], t_auto['parts_config']))
+
+    # 家電
+    if 'home_appliances' in industry_templates:
+        t_home = industry_templates['home_appliances']
+        p_name_home = name_generator.generate_product_name()
+        db.execute_query("""
+            INSERT INTO product_designs (company_id, division_id, category_key, name, material_score, concept_score, production_efficiency, base_price, sales_price, status, developed_week, parts_config)
+            VALUES (?, ?, ?, ?, 3.0, 3.0, 1.0, ?, ?, 'completed', 0, ?)
+        """, (player_id, p_div_home, t_home['cat_key'], p_name_home, t_home['base_price'], t_home['base_price'], t_home['parts_config']))
 
     # 5.5 初期在庫 (小売)
     # 小売も2週分の需要に対応できる在庫を持たせる
     # 各メーカーの商品を均等に取り扱うと仮定
     if retail_ids:
-        expected_retail_demand = int(gb.BASE_MARKET_DEMAND / len(retail_ids))
-        
         for rid in retail_ids:
             div_id = company_div_map.get(rid)
+            retail_comp = db.fetch_one("SELECT industry FROM companies WHERE id = ?", (rid,))
+            retail_ind = retail_comp['industry']
+            expected_demand = retail_share_map.get(rid, 100)
+
             for mid, did in maker_design_map.items():
+                # メーカーの業界を確認 (自社と同じ業界の商品のみ扱う)
+                maker_comp = db.fetch_one("SELECT industry FROM companies WHERE id = ?", (mid,))
+                if maker_comp['industry'] != retail_ind:
+                    continue
+
+                # メーカーの設計書情報を取得して価格を参照
+                design = db.fetch_one("SELECT sales_price FROM product_designs WHERE id = ?", (did,))
+                price = design['sales_price'] if design else 0
+                
                 # メーカーのシェアに応じて在庫を持つ
-                maker_share_pct = maker_share_map.get(mid, 0) / demand
-                stock_qty = int(expected_retail_demand * 2 * maker_share_pct)
+                ind_total_demand = industry_demands.get(retail_ind, 1)
+                maker_share_pct = maker_share_map.get(mid, 0) / ind_total_demand
+                stock_qty = int(expected_demand * 2 * maker_share_pct)
                 db.execute_query("INSERT INTO inventory (company_id, division_id, design_id, quantity, sales_price) VALUES (?, ?, ?, ?, ?)", 
-                                 (rid, div_id, did, stock_qty, initial_base_price))
+                                 (rid, div_id, did, stock_qty, price))
 
     # 6. 施設生成
     # 各企業に必要な施設を生成して割り当てる
@@ -442,10 +568,10 @@ def run_seed():
         
         # 時価総額計算
         if comp['type'] == 'npc_maker':
-            share_qty = maker_share_map.get(cid, 0)
+            share_qty = maker_share_map.get(cid, 100)
             weekly_rev = share_qty * gb.MAKER_UNIT_SALES_PRICE
         else:
-            share_qty = gb.BASE_MARKET_DEMAND / num_npc_retailers
+            share_qty = retail_share_map.get(cid, 100)
             weekly_rev = share_qty * gb.RETAIL_UNIT_SALES_PRICE_BASE
             
         # 予想利益 (営業利益率 5%と仮定)

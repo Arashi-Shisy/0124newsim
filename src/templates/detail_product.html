@@ -25,6 +25,14 @@
                 <span class="value">{{ product.developed_week | format_week }}</span>
             </div>
             <div class="stat-row">
+                <span class="label">累計出荷台数 (B2B)</span>
+                <span class="value">{{ "{:,}".format(total_shipped) }} 台</span>
+            </div>
+            <div class="stat-row">
+                <span class="label">累計販売台数 (B2C)</span>
+                <span class="value">{{ "{:,}".format(total_sold) }} 台</span>
+            </div>
+            <div class="stat-row">
                 <span class="label">開発方針</span>
                 <span class="value">{{ product.strategy }}</span>
             </div>

@@ -901,7 +901,15 @@ def product_detail(design_id):
         })
         total_cost += conf['cost']
 
-    return render_template('detail_product.html', product=product, parts_details=parts_details, total_cost=total_cost, industries=gb.INDUSTRIES)
+    # 累計出荷台数 (B2B)
+    shipped_res = db.fetch_one("SELECT SUM(quantity) as cnt FROM transactions WHERE design_id = ? AND type = 'b2b'", (design_id,))
+    total_shipped = shipped_res['cnt'] if shipped_res and shipped_res['cnt'] else 0
+    
+    # 累計販売台数 (B2C)
+    sold_res = db.fetch_one("SELECT SUM(quantity) as cnt FROM transactions WHERE design_id = ? AND type = 'b2c'", (design_id,))
+    total_sold = sold_res['cnt'] if sold_res and sold_res['cnt'] else 0
+
+    return render_template('detail_product.html', product=product, parts_details=parts_details, total_cost=total_cost, industries=gb.INDUSTRIES, total_shipped=total_shipped, total_sold=total_sold)
 
 @app.route('/npc/<int:npc_id>')
 def npc_detail(npc_id):

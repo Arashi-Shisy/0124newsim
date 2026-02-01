@@ -465,26 +465,64 @@ class NPCLogic:
             
             # カテゴリ需要の取得
             cat_key = design['category_key']
-            # 簡易的にIndustries定義から取得 (本来はmarket_trendsから取るべきだが)
-            base_demand = 1000 # fallback
-            for ind in gb.INDUSTRIES.values():
-                if cat_key in ind['categories']:
-                    base_demand = ind['categories'][cat_key]['base_demand']
-                    break
             
-            estimated_market_demand = base_demand * economic_index * prediction_error
+            # 市場トレンドから直近の需要を取得
+            trend_data = db.fetch_one("SELECT b2c_demand FROM market_trends WHERE category_key = ? ORDER BY week DESC LIMIT 1", (cat_key,))
+            if trend_data:
+                base_demand_val = trend_data['b2c_demand']
+            else:
+                # データがない場合は定義値から計算
+                base_demand_val = 1000 # fallback
+                for ind in gb.INDUSTRIES.values():
+                    if cat_key in ind['categories']:
+                        base_demand_val = ind['categories'][cat_key]['base_demand']
+                        break
+                base_demand_val = int(base_demand_val * economic_index)
+            
+            estimated_market_demand = base_demand_val * prediction_error
             
             # 目標シェア: 現状維持～微増を目指す (最低でも5%は確保しようとする)
-            target_share = max(current_share * 1.05, 0.05)
+            # ブランド力による補正: 平均(50)より高ければ強気、低ければ弱気
+            brand_factor = max(0.5, min(2.0, self.company['brand_power'] / 50.0))
+            
+            if current_share == 0:
+                # 新規参入: 競合数で割ったシェア * ブランド力 * 0.5 (慎重に開始)
+                target_share = (1.0 / max(1, maker_count)) * brand_factor * 0.5
+            else:
+                # 既存: 現状 * 成長係数
+                growth_rate = 1.0 + (0.05 * brand_factor)
+                target_share = current_share * growth_rate
+            
+            # シェア上限キャップ (過剰生産防止)
+            target_share = min(0.4, max(0.01, target_share))
             
             # 予測週販
             predicted_weekly_sales = estimated_market_demand * target_share
+            
+            # 利益率による生産意欲の補正 (Profit Margin Motivation)
+            # 利益率を計算
+            if design['parts_config']:
+                p_conf = json.loads(design['parts_config'])
+                material_cost = sum(p['cost'] for p in p_conf.values())
+            else:
+                material_cost = design['sales_price'] * 0.7 # Fallback estimate
+            
+            profit_margin = (design['sales_price'] - material_cost) / design['sales_price'] if design['sales_price'] > 0 else 0
+            # 利益率 20% を基準に、高ければ増産、低ければ減産 (0.5倍 ~ 1.5倍)
+            profit_factor = max(0.5, min(1.5, 1.0 + (profit_margin - 0.2) * 2.5))
+            
+            predicted_weekly_sales = int(predicted_weekly_sales * profit_factor)
 
-            # 4. 目標在庫の設定 (予測週販の2.5週分を確保 - 過剰在庫抑制のため短縮)
-            target_stock = int(predicted_weekly_sales * 2.5)
+            # 4. 目標在庫の設定 (フェーズに応じて在庫水準を変える)
+            # STABLE: 4週分, CRISIS: 2週分, GROWTH: 6週分
+            weeks_stock = 4
+            if self.phase == 'CRISIS': weeks_stock = 2
+            elif self.phase == 'GROWTH': weeks_stock = 6
+            
+            target_stock = int(predicted_weekly_sales * weeks_stock)
             
             # 最低在庫保証 (不測の事態に備えて最低でも需要の数%程度は持つ)
-            min_stock = int(gb.BASE_MARKET_DEMAND / maker_count * 0.25)
+            min_stock = int(estimated_market_demand / maker_count * 0.25)
             target_stock = max(target_stock, min_stock)
             
             # 最大在庫キャップ (市場総需要の50%を上限とする - 1社での抱え込み防止)
@@ -517,7 +555,7 @@ class NPCLogic:
                 p_conf = json.loads(design['parts_config'])
                 material_cost = sum(p['cost'] for p in p_conf.values())
             else:
-                material_cost = gb.TOTAL_MATERIAL_COST
+                material_cost = design['sales_price'] * 0.7
             total_cost = to_produce * material_cost
             
             # 資金チェック: 固定費4週分は残す
@@ -583,9 +621,19 @@ class NPCLogic:
         # CEOの目利き精度 (営業能力 + 役員適正)
         ceo_precision = self._get_ceo_precision('sales')
 
+        # カテゴリ需要のキャッシュ (DBアクセス削減)
+        trends = db.fetch_all("SELECT category_key, b2c_demand FROM market_trends WHERE week = ?", (current_week - 1,))
+        demand_map = {t['category_key']: t['b2c_demand'] for t in trends}
+
         # 商品スコアリング (コンセプト * ブランド / 価格)
         scored_items = []
         for item in maker_stocks:
+            # 業界チェック: 自社の業界に含まれるカテゴリの商品のみ対象とする
+            my_industry = self.company['industry']
+            if my_industry in gb.INDUSTRIES:
+                if item['category_key'] not in gb.INDUSTRIES[my_industry]['categories']:
+                    continue
+
             # 営業力による価格補正の計算
             # メーカーの営業力が高いと、仕入れ値が高くなる（値引きを引き出せない）
             maker_caps = all_capabilities.get(item['maker_id'], {'sales': 50})
@@ -601,8 +649,12 @@ class NPCLogic:
             # 卸値の基準はMSRPの90% (小売取り分10%)
             wholesale_base = max(1, item['sales_price'] * 0.9) # 0円防止
             actual_price = int(wholesale_base * price_multiplier)
+            # 価格正規化の基準を動的に設定 (カテゴリ平均価格などがあればベストだが、ここではMSRPベース)
+            # ただし、同カテゴリ内での比較がしたいので、カテゴリごとの基準値が必要。
+            # 簡易的に、item['base_price'] (価値基準) を使用する。
+            base_val = item['base_price'] if item['base_price'] > 0 else actual_price
             
-            price_factor = actual_price / 3000000.0 # 300万を基準に正規化
+            price_factor = actual_price / base_val
             if price_factor <= 0: price_factor = 0.1 # ゼロ除算防止
             
             # 評価のブレ: CEOの能力が低いと商品の価値を見誤る
@@ -612,7 +664,20 @@ class NPCLogic:
             # 直感・相性 (Gut Feeling): 数値化できない相性や営業担当の印象など
             gut_feeling = random.uniform(0.9, 1.1)
             
-            score = ((item['concept_score'] * (1 + item['brand_power'] / 100.0)) / price_factor) * sales_visibility * perception_noise * gut_feeling
+            # 利益率 (Retailer Margin)
+            # 小売価格(MSRP) - 仕入れ値(actual_price)
+            retail_margin = (item['sales_price'] - actual_price) / item['sales_price'] if item['sales_price'] > 0 else 0
+            # 利益率によるスコア補正 (10%基準)
+            margin_score = max(0.1, 1.0 + (retail_margin - 0.1) * 5.0)
+
+            # カテゴリ需要 (Category Demand)
+            cat_demand = demand_map.get(item['category_key'], 1000)
+            # 需要1000を基準に正規化 (対数で緩やかに)
+            demand_score = math.log10(max(10, cat_demand)) / 3.0 # log10(1000)=3 -> 1.0
+            
+            base_score = ((item['concept_score'] * (1 + item['brand_power'] / 100.0)) / price_factor)
+            
+            score = base_score * sales_visibility * perception_noise * gut_feeling * margin_score * demand_score
             scored_items.append({**item, 'score': score, 'actual_price': actual_price})
         
         # スコア順にソート
@@ -709,20 +774,77 @@ class NPCLogic:
             # サプライヤー選択
             # 事業部の業界・カテゴリ定義を取得
             ind_key = division['industry_key']
-            # カテゴリはランダムに選定（または既存製品が少ないもの）
+            
+            # カテゴリ選定: 需給バランスと利益率に基づいて選定
             categories = gb.INDUSTRIES[ind_key]['categories']
-            cat_key = random.choice(list(categories.keys()))
+            
+            # 市場トレンド（需要）の取得
+            trends = db.fetch_all("SELECT category_key, b2c_demand FROM market_trends WHERE week = ?", (current_week - 1,))
+            demand_map = {t['category_key']: t['b2c_demand'] for t in trends}
+            
+            # 競合製品数（供給）の取得
+            supply_counts = db.fetch_all("SELECT category_key, COUNT(*) as cnt FROM product_designs WHERE status = 'completed' GROUP BY category_key")
+            supply_map = {s['category_key']: s['cnt'] for s in supply_counts}
+            
+            # 平均価格の取得（利益率計算用）
+            avg_prices = db.fetch_all("SELECT category_key, AVG(sales_price) as avg_price FROM product_designs WHERE status = 'completed' GROUP BY category_key")
+            price_map = {p['category_key']: p['avg_price'] for p in avg_prices}
+
+            cat_keys = []
+            weights = []
+
+            for k, cat_def in categories.items():
+                # 1. 需給バランス (Demand / Supply)
+                demand = demand_map.get(k, cat_def['base_demand'])
+                supply = supply_map.get(k, 0)
+                # 供給が少ないほどチャンス。供給0ならボーナス(0.5で割る=2倍)。
+                supply_factor = max(0.5, supply) 
+                supply_demand_ratio = demand / supply_factor
+                
+                # 2. 推定利益率
+                est_cost = sum(p['base_cost'] for p in cat_def['parts'])
+                mkt_price = price_map.get(k, est_cost * 2.0) # 市場価格がない場合は原価の2倍と仮定（初期参入のインセンティブ）
+                
+                profit_margin = (mkt_price - est_cost) / mkt_price if mkt_price > 0 else 0
+                # 利益率が高いほどスコアアップ。赤字(マイナス)の場合は極小スコア。
+                profit_factor = max(0.01, profit_margin)
+
+                # 総合スコア
+                score = supply_demand_ratio * profit_factor
+                
+                cat_keys.append(k)
+                weights.append(score)
+            
+            if not cat_keys: return
+
+            cat_key = random.choices(cat_keys, weights=weights, k=1)[0]
             cat_def = categories[cat_key]
             
             parts_config = {}
             total_score = 0
+            total_cost = 0
             parts_def = cat_def['parts']
+            
+            # 経営方針に基づくサプライヤー選定基準
+            # luxury: 品質重視 (score高い順)
+            # value: コスト重視 (cost低い順)
+            # standard: バランス
+            if 'orientation' in self.company.keys():
+                orientation = self.company['orientation']
+            else:
+                orientation = 'standard'
             
             for part in parts_def:
                 suppliers = db.fetch_all("SELECT id, trait_material_score, trait_cost_multiplier FROM companies WHERE type = 'system_supplier' AND part_category = ?", (part['key'],))
                 if not suppliers:
                     return # サプライヤーが見つからない場合は開発を中止
-                supplier = random.choice(suppliers)
+                
+                if orientation == 'luxury':
+                    supplier = sorted(suppliers, key=lambda x: x['trait_material_score'], reverse=True)[0]
+                elif orientation == 'value':
+                    supplier = sorted(suppliers, key=lambda x: x['trait_cost_multiplier'])[0]
+                else:
+                    supplier = random.choice(suppliers)
                 
                 # 部品調達のブレ (Quality/Cost Fluctuation): ロット差や交渉による変動 (±10%)
                 quality_fluctuation = random.uniform(0.90, 1.10)
@@ -736,11 +858,20 @@ class NPCLogic:
                     "cost": p_cost
                 }
                 total_score += p_score
+                total_cost += p_cost
             
             avg_material_score = total_score / len(parts_def)
             
-            # 開発方針をランダムに決定
-            strategy = random.choice(list(gb.DEV_STRATEGIES.keys()))
+            # 開発方針の決定
+            if orientation == 'luxury':
+                # コンセプト特化で高付加価値を狙う
+                strategy = gb.DEV_STRATEGY_CONCEPT_SPECIALIZED
+            elif orientation == 'value':
+                # 生産効率特化で大量生産・コストダウン
+                strategy = gb.DEV_STRATEGY_EFFICIENCY_SPECIALIZED
+            else:
+                # バランス
+                strategy = gb.DEV_STRATEGY_BALANCED
 
             name = name_generator.generate_product_name(strategy)
             
@@ -932,6 +1063,14 @@ class NPCLogic:
                 sales_history_item = next((s for s in b2b_sales_history if s['seller_id'] == self.company_id and s['design_id'] == p['id']), None)
                 sales_qty_4w = sales_history_item['total'] if sales_history_item else 0
                 avg_sales_qty = sales_qty_4w / 4.0
+                
+                # 競合価格の調査
+                cat_key = p['category_key']
+                competitor_prices = db.fetch_all("SELECT sales_price FROM product_designs WHERE category_key = ? AND status='completed' AND company_id != ?", (cat_key, self.company_id))
+                if competitor_prices:
+                    avg_market_price = sum(c['sales_price'] for c in competitor_prices) / len(competitor_prices)
+                else:
+                    avg_market_price = p['sales_price']
 
                 new_price = p['sales_price']
                 
@@ -944,7 +1083,9 @@ class NPCLogic:
                     overstock_threshold *= 0.5
 
                 # ロジック: 在庫過多なら値下げ、品薄なら値上げ
+                # さらに市場価格との乖離も考慮する
                 if current_qty > overstock_threshold and avg_sales_qty < (5 * patience):
+                    # 在庫過多
                     # 基準価格(base_price)が原価ではないので、parts_configから原価を計算
                     p_conf = json.loads(p['parts_config']) if p['parts_config'] else {}
                     material_cost = sum(part['cost'] for part in p_conf.values()) if p_conf else 0
@@ -952,13 +1093,41 @@ class NPCLogic:
                     min_margin = 0.8 if self.phase == 'CRISIS' else gb.MIN_PROFIT_MARGIN
                     min_price = int(material_cost * min_margin)
 
-                    # 値下げ幅に性格(aggressiveness)と揺らぎを加える
-                    drop_rate = gb.PRICE_ADJUST_RATE * aggressiveness * random.uniform(0.8, 1.2)
-                    proposed_price = int(p['sales_price'] * (1.0 - drop_rate))
+                    # 方針による値下げ圧力の違い
+                    # 高級ブランドは安易な値下げを嫌う（ブランド毀損防止）
+                    if 'orientation' in self.company.keys():
+                        orientation = self.company['orientation']
+                    else:
+                        orientation = 'standard'
+                    resistance = 1.0
+                    if orientation == 'luxury': resistance = 0.5
+                    elif orientation == 'value': resistance = 1.5 # 廉価メーカーは積極的に下げる
+
+                    if p['sales_price'] > avg_market_price * 1.1: # 市場より1割以上高い
+                        drop_rate = gb.PRICE_ADJUST_RATE * 2.0 * aggressiveness * resistance
+                    else:
+                        drop_rate = gb.PRICE_ADJUST_RATE * aggressiveness * resistance
+                    
+                    proposed_price = int(p['sales_price'] * (1.0 - drop_rate * random.uniform(0.8, 1.2)))
                     new_price = max(min_price, proposed_price)
+                    
                 elif current_qty < shortage_threshold and avg_sales_qty > (10 / patience):
-                    raise_rate = gb.PRICE_ADJUST_RATE * aggressiveness * random.uniform(0.8, 1.2)
-                    new_price = int(p['sales_price'] * (1.0 + raise_rate))
+                    # 品薄・好調
+                    # 市場価格より安いなら、市場価格に近づける（利益確保）
+                    # 高級ブランドは強気に値上げする
+                    if 'orientation' in self.company.keys():
+                        orientation = self.company['orientation']
+                    else:
+                        orientation = 'standard'
+                    boost = 1.0
+                    if orientation == 'luxury': boost = 1.5
+                    
+                    if p['sales_price'] < avg_market_price:
+                        raise_rate = gb.PRICE_ADJUST_RATE * 1.5 * aggressiveness * boost
+                    else:
+                        raise_rate = gb.PRICE_ADJUST_RATE * 0.5 * aggressiveness * boost
+                    
+                    new_price = int(p['sales_price'] * (1.0 + raise_rate * random.uniform(0.8, 1.2)))
                 
                 if new_price != p['sales_price']:
                     db.execute_query("UPDATE product_designs SET sales_price = ? WHERE id = ?", (new_price, p['id']))
@@ -1045,19 +1214,3 @@ class NPCLogic:
                     db.execute_query("UPDATE companies SET funds = funds - ?, outstanding_shares = outstanding_shares - ? WHERE id = ?", (budget, buy_shares, self.company_id))
                     db.execute_query("INSERT INTO account_entries (week, company_id, category, amount) VALUES (?, ?, 'equity_finance', ?)", (current_week, self.company_id, -budget))
                     db.log_file_event(current_week, self.company_id, "Stock Buyback", f"Bought back {buy_shares} shares, cost {budget}")
-
-        elif self.company['type'] == 'npc_retail':
-            # 小売: inventory の sales_price を更新
-            # designsテーブルは全社分持っているので、design_idで引けるように辞書化
-            all_designs_map = {d['id']: d for d in designs}
-
-            for s in inventory:
-                design = all_designs_map.get(s['design_id'])
-                if not design: continue
-                msrp = design['sales_price']
-
-                # 基本戦略: MSRP通りに売る
-                # 売れ残りが多い場合は値下げするなどのロジックをここに追加可能
-                # 現状はMSRPに合わせる (メーカーが価格改定した場合に追従)
-                if s['sales_price'] != msrp:
-                    db.execute_query("UPDATE inventory SET sales_price = ? WHERE id = ?", (msrp, s['id']))
