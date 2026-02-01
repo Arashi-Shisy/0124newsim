@@ -1,4 +1,4 @@
-# c:\0124newSIm\database.py
+# c:\0124newSIm\src\database.py
 # SQLiteデータベースの定義と操作を行うクラス
 import sqlite3
 import json
@@ -65,6 +65,17 @@ class Database:
         )
         """)
 
+        # 事業部
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS divisions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            company_id INTEGER,
+            name TEXT,
+            industry_key TEXT, -- 'automotive', 'home_appliances'
+            FOREIGN KEY(company_id) REFERENCES companies(id)
+        )
+        """)
+
         # NPC
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS npcs (
@@ -73,6 +84,7 @@ class Database:
             age INTEGER,
             gender TEXT,
             company_id INTEGER,
+            division_id INTEGER, -- NULLなら共通部門(本社)
             department TEXT,
             role TEXT,
             salary INTEGER,
@@ -94,9 +106,10 @@ class Database:
             pr REAL,
             accounting REAL,
             executive REAL,
-            industry_aptitude REAL,
+            aptitudes TEXT, -- JSON: {"automotive": 0.5, ...}
             
-            FOREIGN KEY(company_id) REFERENCES companies(id)
+            FOREIGN KEY(company_id) REFERENCES companies(id),
+            FOREIGN KEY(division_id) REFERENCES divisions(id)
         )
         """)
 
@@ -105,6 +118,8 @@ class Database:
         CREATE TABLE IF NOT EXISTS product_designs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             company_id INTEGER,
+            division_id INTEGER,
+            category_key TEXT, -- 'sedan', 'washing_machine' etc.
             name TEXT,
             material_score REAL,
             concept_score REAL,
@@ -116,7 +131,8 @@ class Database:
             developed_week INTEGER,
             parts_config TEXT, -- JSON: {part_key: {supplier_id, score, cost}}
             awareness REAL DEFAULT 0,
-            FOREIGN KEY(company_id) REFERENCES companies(id)
+            FOREIGN KEY(company_id) REFERENCES companies(id),
+            FOREIGN KEY(division_id) REFERENCES divisions(id)
         )
         """)
 
@@ -125,10 +141,12 @@ class Database:
         CREATE TABLE IF NOT EXISTS inventory (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             company_id INTEGER,
+            division_id INTEGER,
             design_id INTEGER,
             quantity INTEGER,
             sales_price INTEGER DEFAULT 0, -- 小売での販売価格 (メーカー在庫の場合はMSRPまたは0)
             FOREIGN KEY(company_id) REFERENCES companies(id),
+            FOREIGN KEY(division_id) REFERENCES divisions(id),
             FOREIGN KEY(design_id) REFERENCES product_designs(id)
         )
         """)
@@ -138,13 +156,15 @@ class Database:
         CREATE TABLE IF NOT EXISTS facilities (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             company_id INTEGER,
+            division_id INTEGER, -- NULLなら共通施設(本社オフィス等)
             name TEXT,
             type TEXT, -- 'office', 'factory', 'store'
             size INTEGER, -- 収容人数
             rent INTEGER,
             access_score TEXT, -- 店舗用 S-D
             is_owned BOOLEAN DEFAULT 0,
-            FOREIGN KEY(company_id) REFERENCES companies(id)
+            FOREIGN KEY(company_id) REFERENCES companies(id),
+            FOREIGN KEY(division_id) REFERENCES divisions(id)
         )
         """)
 
@@ -296,8 +316,10 @@ class Database:
         # 市場トレンド (週次)
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS market_trends (
-            week INTEGER PRIMARY KEY,
-            b2c_demand INTEGER DEFAULT 0
+            week INTEGER,
+            category_key TEXT,
+            b2c_demand INTEGER DEFAULT 0,
+            PRIMARY KEY (week, category_key)
         )
         """)
 

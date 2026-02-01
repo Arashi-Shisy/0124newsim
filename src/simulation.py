@@ -1,4 +1,4 @@
-# c:\0124newSIm\simulation.py
+# c:\0124newSIm\src\simulation.py
 # 週次シミュレーションのメインループ処理
 
 import json
@@ -25,13 +25,12 @@ class Simulation:
     def calculate_capabilities(self, company_id, employees=None):
         """
         企業の能力値を計算する
-        基本値: 部署配属NPCの能力平均
-        補正: 部長(Manager/CxO)のマネジメント能力合計 * 0.1 を加算
+        事業部制に対応: 共通部門は全社、直接部門は事業部ごとに計算
         """
         # 必要なカラムのみ取得して高速化
         if employees is None:
             employees = db.fetch_all("""
-                SELECT department, role, diligence, production, development, sales, hr, pr, accounting, store_ops, management 
+                SELECT department, role, diligence, production, development, sales, hr, pr, accounting, store_ops, management, division_id, aptitudes
                 FROM npcs WHERE company_id = ?""", (company_id,))
         
         # 初期化
@@ -45,23 +44,42 @@ class Simulation:
             'development': 0, 'sales': 0, 'pr': 0, 'hr': 0, 'accounting': 0
         }
 
+        # 事業部情報の取得
+        divisions = db.fetch_all("SELECT id, name, industry_key FROM divisions WHERE company_id = ?", (company_id,))
+        div_map = {d['id']: {'name': d['name'], 'industry': d['industry_key'] or 'automotive'} for d in divisions}
+        
+        # 戻り値の構造拡張
+        caps['divisions'] = {}
+        for div_id, div_info in div_map.items():
+            caps['divisions'][div_id] = {
+                'name': div_info['name'],
+                'industry': div_info['industry'],
+                'production': 0, 'production_capacity': 0,
+                'development': 0, 'development_capacity': 0,
+                'sales': 0, 'sales_capacity': 0,
+                'store_ops': 0, 'store_ops_capacity': 0, 'store_throughput': 0,
+                'requirements': {'development': 0, 'sales': 0}
+            }
+
         # 施設キャパシティの取得
-        facilities = db.fetch_all("SELECT type, size FROM facilities WHERE company_id = ?", (company_id,))
+        facilities = db.fetch_all("SELECT type, size, division_id FROM facilities WHERE company_id = ?", (company_id,))
         
         # 基礎キャパシティ (施設がなくても最低限活動できる場所: ガレージ/自宅など)
         # NPC_SCALE_FACTOR(8) * 1.5人分 = 12 程度確保しておく
         base_cap = int(gb.NPC_SCALE_FACTOR * 1.5)
-        caps_limit = {'factory': base_cap, 'store': base_cap, 'office': base_cap}
-        for f in facilities:
-            if f['type'] in caps_limit:
-                caps_limit[f['type']] += f['size']
+        # 全社共通および事業部ごとの施設リミット
+        caps_limit = {'office': base_cap} # 本社
+        div_caps_limit = {div_id: {'factory': base_cap, 'store': base_cap, 'office': base_cap} for div_id in div_map}
 
-        # 施設稼働状況の初期化 (従業員がいない場合用)
-        caps['facilities'] = {
-            'factory': {'name': '工場', 'usage': 0, 'npc_count': 0, 'limit': int(caps_limit['factory']), 'efficiency': 1.0},
-            'store': {'name': '店舗', 'usage': 0, 'npc_count': 0, 'limit': int(caps_limit['store']), 'efficiency': 1.0},
-            'office': {'name': 'オフィス', 'usage': 0, 'npc_count': 0, 'limit': int(caps_limit['office']), 'efficiency': 1.0}
-        }
+        for f in facilities:
+            if f['division_id'] and f['division_id'] in div_caps_limit:
+                if f['type'] in div_caps_limit[f['division_id']]:
+                    div_caps_limit[f['division_id']][f['type']] += f['size']
+            elif f['type'] == 'office':
+                caps_limit['office'] += f['size']
+
+        # 施設稼働状況の初期化
+        caps['facilities'] = {'office': {'name': '本社オフィス', 'usage': 0, 'limit': caps_limit['office'], 'efficiency': 1.0, 'npc_count': 0}}
         
         if not employees:
             return caps
@@ -73,93 +91,171 @@ class Simulation:
             caps['stability'] = 0
 
         # 部署ごとの集計
-        dept_staff = {d: [] for d in gb.DEPARTMENTS}
-        dept_managers = {d: [] for d in gb.DEPARTMENTS}
-        dept_cxos = {d: [] for d in gb.DEPARTMENTS}
+        # 共通部門
+        corp_depts = [gb.DEPT_HR, gb.DEPT_PR, gb.DEPT_ACCOUNTING]
+        corp_staff = {d: [] for d in corp_depts}
+        
+        # 事業部部門
+        div_depts = [gb.DEPT_PRODUCTION, gb.DEPT_DEV, gb.DEPT_SALES, gb.DEPT_STORE]
+        div_staff = {div_id: {d: [] for d in div_depts} for div_id in div_map}
+        
+        # マネージャー・CxO
+        managers = []
+        cxos = []
 
         for e in employees:
             d = e['department']
-            if d in dept_staff:
-                # 役員 (CxO, CEO) は現場人員(dept_staff)には含めない
-                # ただし、マネジメントボーナス計算用に dept_cxos には追加する
-                if e['role'] in [gb.ROLE_CXO, gb.ROLE_CEO]:
-                    dept_cxos[d].append(e)
-                else:
-                    # 一般社員、部長、部長補佐
-                    dept_staff[d].append(e)
-                    if e['role'] == gb.ROLE_MANAGER:
-                        dept_managers[d].append(e)
+            div_id = e['division_id']
+            
+            if e['role'] == gb.ROLE_MANAGER: managers.append(e)
+            if e['role'] in [gb.ROLE_CXO, gb.ROLE_CEO]: cxos.append(e)
+            
+            if e['role'] in [gb.ROLE_CXO, gb.ROLE_CEO]: continue # 役員は現場人員に含めない
+            
+            if d in corp_depts:
+                corp_staff[d].append(e)
+            elif d in div_depts and div_id in div_staff:
+                div_staff[div_id][d].append(e)
         
         # キャパシティ制限の適用 (あふれた人員は計算から除外、または効率低下)
-        # 使用量記録 (補正前)
-        prod_usage = len(dept_staff[gb.DEPT_PRODUCTION]) * gb.NPC_SCALE_FACTOR
-        store_usage = len(dept_staff[gb.DEPT_STORE]) * gb.NPC_SCALE_FACTOR
+        # 1. 共通部門 (本社オフィス)
+        total_corp_staff = sum(len(corp_staff[d]) for d in corp_depts) * gb.NPC_SCALE_FACTOR
+        corp_efficiency = 1.0
+        if total_corp_staff > caps_limit['office'] and total_corp_staff > 0:
+            corp_efficiency = caps_limit['office'] / total_corp_staff
         
-        # 生産部 -> 工場
-        prod_staff = dept_staff[gb.DEPT_PRODUCTION]
-        if len(prod_staff) * gb.NPC_SCALE_FACTOR > caps_limit['factory']:
-            # 能力が高い順に優先して施設に入れる
-            prod_staff.sort(key=lambda x: x['production'], reverse=True)
-            dept_staff[gb.DEPT_PRODUCTION] = prod_staff[:int(caps_limit['factory'] // gb.NPC_SCALE_FACTOR)]
-        
-        # 店舗部 -> 店舗
-        store_staff = dept_staff[gb.DEPT_STORE]
-        if len(store_staff) * gb.NPC_SCALE_FACTOR > caps_limit['store']:
-            store_staff.sort(key=lambda x: x['store_ops'], reverse=True)
-            dept_staff[gb.DEPT_STORE] = store_staff[:int(caps_limit['store'] // gb.NPC_SCALE_FACTOR)]
-            
-        # その他部署 -> オフィス
-        office_depts = [gb.DEPT_SALES, gb.DEPT_DEV, gb.DEPT_HR, gb.DEPT_PR, gb.DEPT_ACCOUNTING]
-        total_office_staff = sum(len(dept_staff[d]) for d in office_depts) * gb.NPC_SCALE_FACTOR
-        
-        office_efficiency = 1.0
-        if total_office_staff > caps_limit['office'] and total_office_staff > 0:
-            # オフィスは部署が混在しているため、一律で効率を下げる処理とする
-            # (あふれた人数分だけ能力が発揮されない = 全体の平均能力に係数をかける)
-            # 例: キャパ10人で20人いる場合、効率0.5
-            office_efficiency = caps_limit['office'] / total_office_staff
+        caps['facilities']['office']['usage'] = total_corp_staff
+        caps['facilities']['office']['efficiency'] = corp_efficiency
+        caps['facilities']['office']['npc_count'] = sum(len(corp_staff[d]) for d in corp_depts)
 
         # 能力マッピング
-        stat_map = {
-            gb.DEPT_PRODUCTION: 'production',
-            gb.DEPT_DEV: 'development',
-            gb.DEPT_SALES: 'sales',
+        corp_stat_map = {
             gb.DEPT_HR: 'hr',
             gb.DEPT_PR: 'pr',
-            gb.DEPT_ACCOUNTING: 'accounting',
-            gb.DEPT_STORE: 'store_ops'
+            gb.DEPT_ACCOUNTING: 'accounting'
         }
 
-        for dept, stat in stat_map.items():
-            staff = dept_staff[dept]
+        # 共通部門の能力計算
+        for dept, stat in corp_stat_map.items():
+            staff = corp_staff[dept]
             if staff:
-                # オフィス系部署の場合、効率係数を適用
-                efficiency = office_efficiency if dept in office_depts else 1.0
-                
                 avg_stat = sum(e[stat] for e in staff) / len(staff)
                 sum_stat = sum(e[stat] for e in staff)
                 
-                # マネジメントボーナス: 部長は各部署1人のみ適用
-                manager_mgmt = 0
-                if dept_managers[dept]:
-                    manager_mgmt = dept_managers[dept][0]['management']
+                # マネジメントボーナス (全社の該当部署マネージャーを探す)
+                dept_mgrs = [m for m in managers if m['department'] == dept]
+                dept_cxos_list = [c for c in cxos if c['department'] == dept]
                 
-                cxo_mgmt = 0
-                if dept_cxos[dept]:
-                    cxo_mgmt = dept_cxos[dept][0]['management']
-
+                manager_mgmt = dept_mgrs[0]['management'] if dept_mgrs else 0
+                cxo_mgmt = dept_cxos_list[0]['management'] if dept_cxos_list else 0
                 mgmt_bonus = (manager_mgmt * gb.MGMT_BONUS_MANAGER) + (cxo_mgmt * gb.MGMT_BONUS_CXO)
                 
-                # 能力値は100を超えないようにキャップ
-                caps[stat] = min(100.0, (avg_stat + mgmt_bonus) * efficiency)
-                
-                # キャパシティ計算 (要件定義に基づく)
-                if stat == 'store_ops':
-                    # 店舗運営キャパシティ: 合計 + マネジメント
-                    caps[f"{stat}_capacity"] = (sum_stat + mgmt_bonus) * efficiency * gb.NPC_SCALE_FACTOR
-                else:
-                    # その他: 合計
-                    caps[f"{stat}_capacity"] = sum_stat * efficiency * gb.NPC_SCALE_FACTOR
+                caps[stat] = min(100.0, (avg_stat + mgmt_bonus) * corp_efficiency)
+                caps[f"{stat}_capacity"] = sum_stat * corp_efficiency * gb.NPC_SCALE_FACTOR
+
+        # 事業部ごとの能力計算
+        div_stat_map = {
+            gb.DEPT_PRODUCTION: 'production',
+            gb.DEPT_DEV: 'development',
+            gb.DEPT_SALES: 'sales',
+            gb.DEPT_STORE: 'store_ops'
+        }
+
+        for div_id, d_staff in div_staff.items():
+            d_caps = caps['divisions'][div_id]
+            d_limit = div_caps_limit[div_id]
+            industry_key = div_map[div_id]['industry']
+            
+            # 施設制限チェック
+            # 工場
+            prod_staff = d_staff[gb.DEPT_PRODUCTION]
+            prod_usage = len(prod_staff) * gb.NPC_SCALE_FACTOR
+            prod_eff = 1.0
+            if prod_usage > d_limit['factory']:
+                prod_staff.sort(key=lambda x: x['production'], reverse=True)
+                # あふれた分は計算対象外にする
+                d_staff[gb.DEPT_PRODUCTION] = prod_staff[:int(d_limit['factory'] // gb.NPC_SCALE_FACTOR)]
+            
+            # 店舗
+            store_staff = d_staff[gb.DEPT_STORE]
+            store_usage = len(store_staff) * gb.NPC_SCALE_FACTOR
+            if store_usage > d_limit['store']:
+                store_staff.sort(key=lambda x: x['store_ops'], reverse=True)
+                d_staff[gb.DEPT_STORE] = store_staff[:int(d_limit['store'] // gb.NPC_SCALE_FACTOR)]
+            
+            # 事業部オフィス (営業・開発)
+            div_office_staff = (len(d_staff[gb.DEPT_SALES]) + len(d_staff[gb.DEPT_DEV])) * gb.NPC_SCALE_FACTOR
+            div_office_eff = 1.0
+            if div_office_staff > d_limit['office'] and div_office_staff > 0:
+                div_office_eff = d_limit['office'] / div_office_staff
+
+            # 施設稼働状況の記録 (事業部)
+            caps['facilities'][f'factory_{div_id}'] = {
+                'name': f"{d_caps['name']} 工場",
+                'usage': int(prod_usage),
+                'limit': int(d_limit['factory']),
+                'efficiency': prod_eff,
+                'npc_count': len(prod_staff)
+            }
+            caps['facilities'][f'store_{div_id}'] = {
+                'name': f"{d_caps['name']} 店舗",
+                'usage': int(store_usage),
+                'limit': int(d_limit['store']),
+                'efficiency': 1.0,
+                'npc_count': len(store_staff)
+            }
+            caps['facilities'][f'office_{div_id}'] = {
+                'name': f"{d_caps['name']} オフィス",
+                'usage': int(div_office_staff),
+                'limit': int(d_limit['office']),
+                'efficiency': div_office_eff,
+                'npc_count': len(d_staff[gb.DEPT_SALES]) + len(d_staff[gb.DEPT_DEV])
+            }
+
+            # 計算
+            for dept, stat in div_stat_map.items():
+                staff = d_staff[dept]
+                if staff:
+                    eff = div_office_eff if dept in [gb.DEPT_SALES, gb.DEPT_DEV] else 1.0
+                    
+                    # 業界適性を適用 (能力値 * 適性値)
+                    weighted_stats = []
+                    for e in staff:
+                        apts = json.loads(e['aptitudes']) if e['aptitudes'] else {}
+                        apt = apts.get(industry_key, 0.1)
+                        weighted_stats.append(e[stat] * apt)
+
+                    avg_stat = sum(weighted_stats) / len(staff)
+                    sum_stat = sum(weighted_stats)
+                    
+                    # 事業部マネージャー
+                    dept_mgrs = [m for m in managers if m['department'] == dept and m['division_id'] == div_id]
+                    # CxOは全社共通だが、事業部にも影響すると仮定（あるいは事業部担当役員）
+                    # ここでは簡易的に全社CxOが全事業部を見る
+                    dept_cxos_list = [c for c in cxos if c['department'] == dept]
+                    
+                    manager_mgmt = dept_mgrs[0]['management'] if dept_mgrs else 0
+                    cxo_mgmt = dept_cxos_list[0]['management'] if dept_cxos_list else 0
+                    mgmt_bonus = (manager_mgmt * gb.MGMT_BONUS_MANAGER) + (cxo_mgmt * gb.MGMT_BONUS_CXO)
+                    
+                    d_caps[stat] = min(100.0, (avg_stat + mgmt_bonus) * eff)
+                    
+                    if stat == 'store_ops':
+                        d_caps[f"{stat}_capacity"] = (sum_stat + mgmt_bonus) * eff * gb.NPC_SCALE_FACTOR
+                    else:
+                        d_caps[f"{stat}_capacity"] = sum_stat * eff * gb.NPC_SCALE_FACTOR
+            
+            # 店舗スループット
+            store_staff_count = len(d_staff[gb.DEPT_STORE])
+            d_caps['store_throughput'] = store_staff_count * gb.NPC_SCALE_FACTOR * gb.BASE_SALES_EFFICIENCY * (d_caps['store_ops'] / 50.0)
+            
+            # 後方互換性のため、全社合計にも加算
+            for k in ['production', 'development', 'sales', 'store_ops']:
+                # 平均値の加重平均をとるべきだが、簡易的に最大値または合計をとる
+                # ここでは合計キャパシティを加算、能力値は最大値を採用
+                caps[f"{k}_capacity"] += d_caps[f"{k}_capacity"]
+                caps[k] = max(caps[k], d_caps[k])
+            caps['store_throughput'] += d_caps['store_throughput']
         
         # 安定性によるデバフ (要件: 低い場合ランダムでデバフ発生)
         # 安定性が50未満の場合、確率で全能力ダウン (日によって調子が悪い)
@@ -174,34 +270,37 @@ class Simulation:
 
         # --- 仕事量とキャパシティ不足によるペナルティ計算 ---
         # 1. 開発部 (Development)
-        # 仕事量: 開発中のプロジェクト数
-        dev_projects = db.fetch_one("SELECT COUNT(*) as cnt FROM product_designs WHERE company_id = ? AND status = 'developing'", (company_id,))
-        dev_count = dev_projects['cnt'] if dev_projects else 0
-        req_dev = dev_count * gb.REQ_CAPACITY_DEV_PROJECT
-        caps['requirements']['development'] = req_dev
-        
-        if req_dev > 0:
-            # 充足率 (最大1.0)
-            sufficiency = min(1.0, caps['development_capacity'] / req_dev)
-            # ペナルティ: 能力値(平均)が低下する (質の低下)
-            caps['development'] *= sufficiency
+        # 事業部ごとに計算
+        for div_id, d_caps in caps['divisions'].items():
+            dev_projects = db.fetch_one("SELECT COUNT(*) as cnt FROM product_designs WHERE company_id = ? AND division_id = ? AND status = 'developing'", (company_id, div_id))
+            dev_count = dev_projects['cnt'] if dev_projects else 0
+            req_dev = dev_count * gb.REQ_CAPACITY_DEV_PROJECT
+            d_caps['requirements']['development'] = req_dev
+            
+            if req_dev > 0:
+                sufficiency = min(1.0, d_caps['development_capacity'] / req_dev)
+                d_caps['development'] *= sufficiency
+                # 全社値にも反映（簡易）
+                caps['requirements']['development'] += req_dev
 
         # 2. 営業部 (Sales)
-        # 仕事量: 前週のB2B取引数 + 現在庫数
-        # 前週の統計がない場合は0扱い
+        # 事業部ごとに計算
         current_week = self.get_current_week()
+        # 統計データは全社合算なので、ここでは簡易的に在庫数から推測するか、全社一括で計算して配分する
+        # 今回は全社在庫数と取引数で計算し、各事業部の営業力に一律ペナルティを与える
         prev_stats = db.fetch_one("SELECT b2b_sales, b2c_sales, inventory_count FROM weekly_stats WHERE company_id = ? AND week = ?", (company_id, current_week - 1))
-        
         tx_count = prev_stats['b2b_sales'] if prev_stats else 0
         stock_count = prev_stats['inventory_count'] if prev_stats else 0
-        
         req_sales = (tx_count * gb.REQ_CAPACITY_SALES_TRANSACTION) + (stock_count * gb.REQ_CAPACITY_SALES_STOCK)
         caps['requirements']['sales'] = req_sales
         
-        if req_sales > 0:
-            sufficiency = min(1.0, caps['sales_capacity'] / req_sales)
-            # ペナルティ: 営業能力低下 -> 卸値ダウン、仕入れ目利き低下
+        # 全事業部の営業キャパ合計
+        total_sales_cap = sum(d['sales_capacity'] for d in caps['divisions'].values())
+        if req_sales > 0 and total_sales_cap > 0:
+            sufficiency = min(1.0, total_sales_cap / req_sales)
             caps['sales'] *= sufficiency
+            for d in caps['divisions'].values():
+                d['sales'] *= sufficiency
 
         # 3. 広報部 (PR)
         # 仕事量: ブランド力 + 全商品認知度
@@ -240,35 +339,6 @@ class Simulation:
         req_acc = (total_tx * gb.ACCOUNTING_LOAD_PER_TRANSACTION) + (total_employees * gb.ACCOUNTING_LOAD_PER_EMPLOYEE)
         caps['requirements']['accounting'] = int(req_acc)
 
-        # 販売キャパシティ計算 (店舗スタッフ数 * 効率 * 能力補正)
-        # process_b2cでの再クエリを避けるためここで計算 (名称をstore_throughputに変更)
-        store_staff_count = len(dept_staff[gb.DEPT_STORE])
-        caps['store_throughput'] = store_staff_count * gb.NPC_SCALE_FACTOR * gb.BASE_SALES_EFFICIENCY * (caps['store_ops'] / 50.0)
-        
-        # 施設稼働状況の記録
-        caps['facilities'] = {
-            'factory': {
-                'name': '工場',
-                'usage': int(prod_usage),
-                'npc_count': len(dept_staff[gb.DEPT_PRODUCTION]),
-                'limit': int(caps_limit['factory']),
-                'efficiency': 1.0 if prod_usage <= caps_limit['factory'] else caps_limit['factory'] / prod_usage if prod_usage > 0 else 1.0
-            },
-            'store': {
-                'name': '店舗',
-                'usage': int(store_usage),
-                'npc_count': len(dept_staff[gb.DEPT_STORE]),
-                'limit': int(caps_limit['store']),
-                'efficiency': 1.0 if store_usage <= caps_limit['store'] else caps_limit['store'] / store_usage if store_usage > 0 else 1.0
-            },
-            'office': {
-                'name': 'オフィス',
-                'usage': int(total_office_staff),
-                'npc_count': sum(len(dept_staff[d]) for d in office_depts),
-                'limit': int(caps_limit['office']),
-                'efficiency': office_efficiency
-            }
-        }
         
         return caps
 
@@ -613,13 +683,17 @@ class Simulation:
             db.increment_weekly_stat(week, seller_id, 'b2b_sales', count)
 
     def process_b2c(self, week):
-        # 総需要計算
-        # 景気指数を反映
+        # カテゴリごとの需要計算とマッチング
         economic_index = db.fetch_one("SELECT economic_index FROM game_state")['economic_index']
-        market_demand = int(gb.BASE_MARKET_DEMAND * economic_index * random.uniform(0.95, 1.05))
         
-        # 需要を記録
-        db.execute_query("INSERT INTO market_trends (week, b2c_demand) VALUES (?, ?)", (week, market_demand))
+        # 全カテゴリの需要を計算
+        categories = []
+        for ind_key, ind_val in gb.INDUSTRIES.items():
+            for cat_key, cat_val in ind_val['categories'].items():
+                base = cat_val['base_demand']
+                demand = int(base * economic_index * random.uniform(0.95, 1.05))
+                categories.append({'key': cat_key, 'demand': demand})
+                db.execute_query("INSERT INTO market_trends (week, category_key, b2c_demand) VALUES (?, ?, ?)", (week, cat_key, demand))
         
         # 前週のB2C販売数取得 (トレンド/バンドワゴン効果用)
         prev_b2c_sales = db.fetch_all("SELECT design_id, SUM(quantity) as total FROM transactions WHERE week = ? AND type = 'b2c' GROUP BY design_id", (week - 1,))
@@ -627,8 +701,8 @@ class Simulation:
 
         # 小売在庫の取得
         retail_stocks = db.fetch_all("""
-            SELECT i.id, i.company_id, i.quantity, i.sales_price as retail_price, i.design_id, d.name as product_name,
-                   d.concept_score, d.base_price, d.sales_price as msrp, d.awareness, d.material_score, d.parts_config,
+            SELECT i.id, i.company_id, i.division_id, i.quantity, i.sales_price as retail_price, i.design_id, d.name as product_name,
+                   d.concept_score, d.base_price, d.sales_price as msrp, d.awareness, d.material_score, d.parts_config, d.category_key,
                    c.brand_power as retail_brand, c.type as company_type,
                    m.brand_power as maker_brand, m.id as creator_id
             FROM inventory i
@@ -643,98 +717,92 @@ class Simulation:
 
         # 企業ごとの能力キャッシュ
         comp_caps = {}
-
-        # スコアリング
-        scored_stocks = []
-        total_score = 0
-        for stock in retail_stocks:
-            cid = stock['company_id']
-            if cid not in comp_caps:
-                caps = self.calculate_capabilities(cid)
-                comp_caps[cid] = caps
-
-            # 店舗スコア: 小売ブランド * 店舗運営力 * アクセス(簡易的に1.0)
-            store_ops = comp_caps[cid]['store_ops']
-            store_score = (1 + stock['retail_brand'] / 100.0) * (1 + store_ops / 100.0)
-
-            # 製品スコア: (コンセプト * 材料 * (1 + メーカーブランド/100) * (1 + 認知度/100)) / 価格係数
-            # 顧客は「基準価格(base_price)」と「実売価格(retail_price)」の差分を見る
-            # base_price: その製品の価値に見合った価格
-            base_price = stock['base_price']
-            retail_price = stock['retail_price']
-            
-            # 価格係数: 基準価格に対して安ければスコアアップ、高ければダウン
-            # 例: 基準300万で売値270万 -> 0.9 -> 割安 -> スコアアップ
-            price_ratio = retail_price / base_price if base_price > 0 else 1.0
-            price_factor = price_ratio ** 2 # 価格感度は強めに
-            
-            # 顧客の気まぐれ・トレンド (Weekly Trend): ±20%の揺らぎ
-            trend_factor = random.uniform(0.8, 1.2)
-            
-            # バンドワゴン効果: 前週売れているものはさらに売れやすい (対数で緩やかに)
-            prev_sold = prev_sales_map.get(stock['design_id'], 0)
-            bandwagon_bonus = 1.0 + (math.log1p(prev_sold) * 0.15)
-            
-            # 顧客の多様性と気まぐれ (Preference Noise): 正規分布で揺らぎを持たせる
-            preference_noise = random.gauss(1.0, 0.15)
-            
-            product_score = (stock['concept_score'] * stock['material_score'] * 
-                             (1 + stock['maker_brand'] / 100.0) * (1 + stock['awareness'] / 100.0)) / price_factor
-            
-            # 総合スコア
-            final_score = store_score * product_score * trend_factor * bandwagon_bonus * preference_noise
-            # 後続の計算で小売価格と卸売価格を両方使うため、ここで保持しておく
-            scored_stocks.append({**stock, 'score': final_score})
-            total_score += final_score
-            
-        # 販売数記録用マップ (DB更新をまとめるため)
-        sales_record = {s['id']: 0 for s in scored_stocks}
-
-        # 需要分配
-        # 在庫切れやキャパ不足で余った需要を再分配するため、最大3回ループする
-        remaining_demand = market_demand
         
-        for _ in range(3):
-            if remaining_demand <= 0: break
+        # カテゴリごとに処理
+        for cat in categories:
+            cat_key = cat['key']
+            market_demand = cat['demand']
             
-            # 販売可能な在庫のみ抽出
-            active_stocks = [s for s in scored_stocks if (s['quantity'] - sales_record[s['id']]) > 0 and comp_caps[s['company_id']]['store_throughput'] > 0]
-            if not active_stocks: break
+            # このカテゴリの在庫のみ抽出
+            cat_stocks = [s for s in retail_stocks if s['category_key'] == cat_key]
+            if not cat_stocks: continue
+
+            # スコアリング
+            scored_stocks = []
+            total_score = 0
+            for stock in cat_stocks:
+                cid = stock['company_id']
+                if cid not in comp_caps:
+                    comp_caps[cid] = self.calculate_capabilities(cid)
+
+                # 事業部ごとの店舗運営力を使用すべきだが、小売は通常1事業部または全社共通で売る
+                # ここでは全社合計の store_ops を使用
+                store_ops = comp_caps[cid]['store_ops']
+                store_score = (1 + stock['retail_brand'] / 100.0) * (1 + store_ops / 100.0)
+
+                base_price = stock['base_price']
+                retail_price = stock['retail_price']
+                price_ratio = retail_price / base_price if base_price > 0 else 1.0
+                price_factor = price_ratio ** 2
+                
+                trend_factor = random.uniform(0.8, 1.2)
+                prev_sold = prev_sales_map.get(stock['design_id'], 0)
+                bandwagon_bonus = 1.0 + (math.log1p(prev_sold) * 0.15)
+                preference_noise = random.gauss(1.0, 0.15)
+                
+                product_score = (stock['concept_score'] * stock['material_score'] * 
+                                (1 + stock['maker_brand'] / 100.0) * (1 + stock['awareness'] / 100.0)) / price_factor
+                
+                final_score = store_score * product_score * trend_factor * bandwagon_bonus * preference_noise
+                scored_stocks.append({**stock, 'score': final_score})
+                total_score += final_score
             
-            current_total_score = sum(s['score'] for s in active_stocks)
-            if current_total_score == 0: break
+            # 需要分配
+            sales_record = {s['id']: 0 for s in scored_stocks}
+            remaining_demand = market_demand
             
-            round_demand = remaining_demand
-            remaining_demand = 0 # リセット
+            for _ in range(3):
+                if remaining_demand <= 0: break
+                
+                active_stocks = [s for s in scored_stocks if (s['quantity'] - sales_record[s['id']]) > 0 and comp_caps[s['company_id']]['store_throughput'] > 0]
+                if not active_stocks: break
+                
+                current_total_score = sum(s['score'] for s in active_stocks)
+                if current_total_score == 0: break
+                
+                round_demand = remaining_demand
+                remaining_demand = 0
+                
+                for stock in active_stocks:
+                    share = stock['score'] / current_total_score
+                    float_demand = round_demand * share
+                    demand = int(float_demand)
+                    if random.random() < (float_demand - demand): demand += 1
+                    
+                    current_qty = stock['quantity'] - sales_record[stock['id']]
+                    cap_float = comp_caps[stock['company_id']]['store_throughput']
+                    capacity = int(cap_float)
+                    if random.random() < (cap_float - capacity): capacity += 1
+                    
+                    sold = min(demand, current_qty, capacity)
+                    sold = int(sold)
+                    
+                    if sold > 0:
+                        sales_record[stock['id']] += sold
+                        comp_caps[stock['company_id']]['store_throughput'] -= sold
+                    
+                    if demand > sold:
+                        remaining_demand += (demand - sold)
             
-            for stock in active_stocks:
-                share = stock['score'] / current_total_score
-                
-                # 確率的丸め込み (端数切り捨てによる需要消失を防ぐ)
-                float_demand = round_demand * share
-                demand = int(float_demand)
-                if random.random() < (float_demand - demand):
-                    demand += 1
-                
-                # 現在の在庫数とキャパシティ
-                current_qty = stock['quantity'] - sales_record[stock['id']]
-                # キャパシティはfloatのままだと微小値が残るので、ここで整数化して扱う
-                # ただし、確率的に切り上げることで、0.5人分の力でも運が良ければ1台売れるようにする
-                cap_float = comp_caps[stock['company_id']]['store_throughput']
-                capacity = int(cap_float)
-                if random.random() < (cap_float - capacity):
-                    capacity += 1
-                
-                sold = min(demand, current_qty, capacity)
-                sold = int(sold) # 念のため整数化
-                
-                if sold > 0:
-                    sales_record[stock['id']] += sold
-                    comp_caps[stock['company_id']]['store_throughput'] -= sold
-                
-                # 満たせなかった需要を次へ回す
-                if demand > sold:
-                    remaining_demand += (demand - sold)
+            # DB更新用リストに追加 (カテゴリごとの結果を統合)
+            # (ループ外で定義したリストに追加していく処理は元のコードと同じ構造にするため省略し、
+            #  元のコードの update_inventory 等のリスト構築部分をこのループ内で行うか、
+            #  sales_record を全カテゴリ分統合してから一括処理する)
+            # ここでは sales_record を全カテゴリ分マージする形をとる
+            if 'all_sales_record' not in locals(): all_sales_record = {}
+            all_sales_record.update(sales_record)
+            if 'all_scored_stocks' not in locals(): all_scored_stocks = []
+            all_scored_stocks.extend(scored_stocks)
 
         # DB更新とログ記録
         # executemany用にデータを準備
@@ -745,8 +813,8 @@ class Simulation:
         insert_cogs = []
         b2c_sales_counts = {} # {company_id: count}
 
-        for stock in scored_stocks:
-            sold = sales_record[stock['id']]
+        for stock in all_scored_stocks:
+            sold = all_sales_record.get(stock['id'], 0)
             if sold > 0:
                 # ★バグ修正: 収益と原価を正しく計上する
                 # 収益: 販売数 * 小売価格
@@ -834,8 +902,16 @@ class Simulation:
                     target_dept = best_offer['target_dept']
                     if not target_dept: target_dept = gb.DEPT_PRODUCTION # フォールバック
 
-                    cursor.execute("UPDATE npcs SET company_id = ?, department = ?, role = ?, salary = ?, desired_salary = ?, loyalty = 50 WHERE id = ?",
-                                   (best_offer['company_id'], target_dept, gb.ROLE_MEMBER, best_offer['offer_salary'], best_offer['offer_salary'], nid))
+                    # 事業部IDの決定 (直接部門の場合は最初の事業部に割り当てる)
+                    division_id = None
+                    if target_dept in [gb.DEPT_PRODUCTION, gb.DEPT_SALES, gb.DEPT_DEV, gb.DEPT_STORE]:
+                        # 簡易的に最初の事業部を取得
+                        div = db.fetch_one("SELECT id FROM divisions WHERE company_id = ? LIMIT 1", (best_offer['company_id'],))
+                        if div:
+                            division_id = div['id']
+
+                    cursor.execute("UPDATE npcs SET company_id = ?, division_id = ?, department = ?, role = ?, salary = ?, desired_salary = ?, loyalty = 50 WHERE id = ?",
+                                   (best_offer['company_id'], division_id, target_dept, gb.ROLE_MEMBER, best_offer['offer_salary'], best_offer['offer_salary'], nid))
                     
                     cursor.execute("INSERT INTO news_logs (week, company_id, message, type) VALUES (?, ?, ?, ?)",
                                    (week, best_offer['company_id'], f"{npc['name']} を採用しました (年収: ¥{best_offer['offer_salary']:,})", 'info'))
@@ -852,6 +928,10 @@ class Simulation:
         # 企業ごとの処理 (忠誠度、成長、給与)
         companies = db.fetch_all("SELECT id, type FROM companies WHERE is_active = 1")
         
+        # 事業部情報のキャッシュ (ID -> Industry)
+        all_divisions = db.fetch_all("SELECT id, industry_key FROM divisions")
+        div_industry_map = {d['id']: d['industry_key'] for d in all_divisions}
+
         for comp in companies:
             if comp['type'] == 'system_supplier': continue
 
@@ -934,12 +1014,17 @@ class Simulation:
                     # 適応力50なら0.1 -> base_growth * 2
                     changes['executive'] = min(gb.ABILITY_MAX, npc['executive'] + (base_growth * 2))
                 
-                # 業界適性
-                current_apt = npc['industry_aptitude']
-                if current_apt < 2.0:
-                    speed_factor = npc['adaptability'] / 50.0
-                    apt_growth = (0.9 / 13.0) * speed_factor if current_apt < 1.0 else (1.0 / 260.0) * speed_factor
-                    changes['industry_aptitude'] = min(2.0, current_apt + apt_growth)
+                # 業界適性 (所属している事業部の業界のみ成長)
+                if npc['division_id'] and npc['division_id'] in div_industry_map:
+                    ind_key = div_industry_map[npc['division_id']]
+                    apts = json.loads(npc['aptitudes']) if npc['aptitudes'] else {}
+                    current_apt = apts.get(ind_key, 0.1)
+                    
+                    if current_apt < 2.0:
+                        speed_factor = npc['adaptability'] / 50.0
+                        apt_growth = (0.9 / 13.0) * speed_factor if current_apt < 1.0 else (1.0 / 260.0) * speed_factor
+                        apts[ind_key] = min(2.0, current_apt + apt_growth)
+                        changes['aptitudes'] = json.dumps(apts)
 
                 # 3. 希望給与の更新 (年に1回)
                 if week % 52 == 0:
@@ -1113,7 +1198,17 @@ class Simulation:
             if updated_proj:
                 current_start_week = updated_proj['developed_week']
 
-            if week - current_start_week >= gb.DEVELOPMENT_DURATION:
+            # 開発期間の取得 (カテゴリ依存)
+            duration = 26 # Default fallback
+            if proj['division_id'] and proj['category_key']:
+                div = db.fetch_one("SELECT industry_key FROM divisions WHERE id = ?", (proj['division_id'],))
+                if div:
+                    ind_key = div['industry_key']
+                    cat_key = proj['category_key']
+                    if ind_key in gb.INDUSTRIES and cat_key in gb.INDUSTRIES[ind_key]['categories']:
+                        duration = gb.INDUSTRIES[ind_key]['categories'][cat_key]['development_duration']
+
+            if week - current_start_week >= duration:
                 # 開発完了処理
                 
                 # 企業の開発力を計算

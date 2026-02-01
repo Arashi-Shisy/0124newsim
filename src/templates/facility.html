@@ -16,6 +16,7 @@
                         <th>タイプ</th>
                         <th>規模 (収容人数)</th>
                         <th>賃料/週</th>
+                        <th>所属事業部</th>
                         <th>所有形態</th>
                         <th>アクセス</th>
                         <th>操作</th>
@@ -28,6 +29,7 @@
                         <td>{{ fac.type }}</td>
                         <td>{{ fac.size }}</td>
                         <td>¥{{ "{:,}".format(fac.rent) }}</td>
+                        <td>{{ fac.division_name if fac.division_name else '共通部門 (本社)' }}</td>
                         <td>{{ '自社所有' if fac.is_owned else '賃貸' }}</td>
                         <td>{{ fac.access_score if fac.access_score else '-' }}</td>
                         <td>
@@ -43,7 +45,7 @@
                         </td>
                     </tr>
                     {% else %}
-                    <tr><td colspan="7">施設がありません。</td></tr>
+                    <tr><td colspan="8">施設がありません。</td></tr>
                     {% endfor %}
                 </tbody>
             </table>
@@ -63,6 +65,7 @@
                         <th>タイプ</th>
                         <th>規模</th>
                         <th>賃料/週</th>
+                        <th>契約対象事業部</th>
                         <th>アクセス</th>
                         <th>操作</th>
                     </tr>
@@ -74,15 +77,23 @@
                         <td>{{ fac.type }}</td>
                         <td>{{ fac.size }}</td>
                         <td>¥{{ "{:,}".format(fac.rent) }}</td>
+                        <form action="{{ url_for('facility_contract') }}" method="post">
+                        <td>
+                            <select name="division_id" class="form-control" style="padding: 2px; font-size: 12px;">
+                                <option value="">共通部門 (本社)</option>
+                                {% for div in player_divisions %}
+                                <option value="{{ div.id }}">{{ div.name }}</option>
+                                {% endfor %}
+                            </select>
+                        </td>
                         <td>{{ fac.access_score if fac.access_score else '-' }}</td>
                         <td>
-                            <form action="{{ url_for('facility_contract') }}" method="post">
                                 <input type="hidden" name="facility_id" value="{{ fac.id }}">
                                 {% set buy_price = (fac.rent * purchase_multiplier)|int %}
                                 <button type="submit" name="action" value="rent" class="btn btn-small btn-secondary">賃貸</button>
                                 <button type="submit" name="action" value="buy" class="btn btn-small btn-primary" onclick="return confirm('購入しますか？\n価格: ¥{{ '{:,}'.format(buy_price) }}')">購入 (¥{{ "{:,}".format(buy_price) }})</button>
-                            </form>
                         </td>
+                        </form>
                     </tr>
                     {% endfor %}
                 </tbody>

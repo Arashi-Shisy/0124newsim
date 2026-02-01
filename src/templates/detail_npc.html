@@ -72,10 +72,6 @@
                         <span class="label">役員適正</span>
                         <span class="value">{{ npc.executive | ability_range_colored(hr_power) }}</span>
                     </div>
-                    <div class="stat-row">
-                        <span class="label">業界適性</span>
-                        <span class="value">{{ "{:.1f}".format(npc.industry_aptitude) }}</span>
-                    </div>
                 </div>
                 <div>
                     <h4 style="border-bottom: 1px solid var(--border-color); padding-bottom: 5px;">実務能力</h4>
@@ -109,6 +105,24 @@
                     </div>
                 </div>
             </div>
+        </div>
+    </div>
+
+    <div class="card card-large">
+        <div class="card-header">
+            <h2>業界適性 (Industry Aptitude)</h2>
+        </div>
+        <div class="card-body">
+            <table class="data-table">
+                {% set apts = npc.aptitudes | json_load %}
+                {% for key, val in apts.items() %}
+                <tr>
+                    <td>{{ industries[key].name if key in industries else key }}</td>
+                    <td>{{ "{:.2f}".format(val) }}</td>
+                    <td><div class="bar-container"><div class="bar-fill" style="width: {{ (val / 2.0 * 100)|int }}%;"></div></div></td>
+                </tr>
+                {% endfor %}
+            </table>
         </div>
     </div>
 </div>

@@ -1,4 +1,4 @@
-# c:\0124newSIm\seed.py
+# c:\0124newSIm\src\seed.py
 # 初期データを生成・投入するスクリプト
 
 import json
@@ -9,15 +9,15 @@ import name_generator
 
 # NPCテーブルのカラム順序を固定定義
 NPC_COLUMNS = [
-    "name", "age", "gender", "company_id", "department", "role", 
+    "name", "age", "gender", "company_id", "division_id", "department", "role", 
     "salary", "desired_salary", "loyalty", "is_genius", 
     "last_resigned_week", "last_company_id", 
     "diligence", "management", "adaptability", "store_ops", 
     "production", "development", "sales", "hr", "pr", "accounting", 
-    "executive", "industry_aptitude"
+    "executive", "aptitudes"
 ]
 
-def generate_random_npc(age=None, company_id=None, department=None, role=None):
+def generate_random_npc(age=None, company_id=None, division_id=None, department=None, role=None):
     if age is None:
         age = random.randint(gb.START_AGE, 40)
     
@@ -35,11 +35,15 @@ def generate_random_npc(age=None, company_id=None, department=None, role=None):
     gender = random.choice(["M", "F"])
     name = name_generator.generate_person_name(gender)
 
+    # 全業界に対して初期適性 0.1 を設定
+    aptitudes = {ind: 0.1 for ind in gb.INDUSTRIES.keys()}
+
     npc = {
         "name": name,
         "age": age,
         "gender": gender,
         "company_id": company_id,
+        "division_id": division_id,
         "department": department,
         "role": role,
         "salary": 0, # 後で計算
@@ -59,7 +63,7 @@ def generate_random_npc(age=None, company_id=None, department=None, role=None):
         "pr": get_stat(),
         "accounting": get_stat(),
         "executive": get_stat(),
-        "industry_aptitude": 0.1
+        "aptitudes": json.dumps(aptitudes)
     }
     
     # 給与計算: 最高能力値に基づく
@@ -127,12 +131,22 @@ def run_seed():
     maker_shares = [0.30, 0.20, 0.15, 0.10, 0.08, 0.07, 0.05, 0.05]
     random.shuffle(maker_shares) # ランダムに割り当て
     
+    # 業界定義の取得
+    auto_ind = gb.INDUSTRIES['automotive']
+    home_ind = gb.INDUSTRIES['home_appliances']
+    auto_cat = list(auto_ind['categories'].keys())[0] # sedan
+    home_cat = list(home_ind['categories'].keys())[0] # washing_machine (簡易)
+    
     # 2. 企業作成
     # プレイヤー企業
     player_id = db.execute_query("""
         INSERT INTO companies (name, type, funds, stock_price, outstanding_shares, market_cap, listing_status) 
         VALUES ('Player Corp', 'player', ?, ?, ?, ?, 'private')
     """, (gb.INITIAL_FUNDS_MAKER, gb.INITIAL_STOCK_PRICE, gb.INITIAL_SHARES, gb.INITIAL_STOCK_PRICE * gb.INITIAL_SHARES))
+    
+    # プレイヤー事業部作成 (自動車、家電)
+    p_div_auto = db.execute_query("INSERT INTO divisions (company_id, name, industry_key) VALUES (?, ?, ?)", (player_id, "自動車事業部", "automotive"))
+    p_div_home = db.execute_query("INSERT INTO divisions (company_id, name, industry_key) VALUES (?, ?, ?)", (player_id, "家電事業部", "home_appliances"))
 
     # NPCメーカー
     npc_maker_ids = []
@@ -150,12 +164,14 @@ def run_seed():
         maker_share_map[mid] = demand * share_pct
 
     # NPC小売
+    npc_retail_ids = []
     for i in range(num_npc_retailers):
         name = name_generator.generate_company_name('npc_retail')
-        db.execute_query("""
+        rid = db.execute_query("""
             INSERT INTO companies (name, type, funds, stock_price, outstanding_shares, market_cap, listing_status) 
             VALUES (?, 'npc_retail', ?, ?, ?, ?, 'public')
         """, (name, gb.INITIAL_FUNDS_RETAIL, gb.INITIAL_STOCK_PRICE, gb.INITIAL_SHARES, gb.INITIAL_STOCK_PRICE * gb.INITIAL_SHARES))
+        npc_retail_ids.append(rid)
 
     # システムサプライヤー (各パーツごとに3社)
     supplier_templates = [
@@ -164,13 +180,17 @@ def run_seed():
         {"score": 4.5, "cost": 1.5}
     ]
     
-    for part in gb.INDUSTRIES[gb.CURRENT_INDUSTRY]['parts']:
-        for s in supplier_templates:
-            s_name = name_generator.generate_supplier_name(part['label'])
-            db.execute_query("""
-                INSERT INTO companies (name, type, funds, trait_material_score, trait_cost_multiplier, part_category)
-                VALUES (?, 'system_supplier', 0, ?, ?, ?)
-            """, (s_name, s['score'], s['cost'], part['key']))
+    # 全業界のパーツサプライヤー生成
+    for ind in gb.INDUSTRIES.values():
+        for cat in ind['categories'].values():
+            for part in cat['parts']:
+                for s in supplier_templates:
+                    s_name = name_generator.generate_supplier_name(part['label'])
+                    # 重複チェックは省略（簡易）
+                    db.execute_query("""
+                        INSERT INTO companies (name, type, funds, trait_material_score, trait_cost_multiplier, part_category)
+                        VALUES (?, 'system_supplier', 0, ?, ?, ?)
+                    """, (s_name, s['score'], s['cost'], part['key']))
 
     # 3. NPC生成 (従業員 + 失業者)
     npc_data_list = []
@@ -179,10 +199,8 @@ def run_seed():
     # メーカー (NPC Makers only - Player starts with nothing)
     maker_ids = npc_maker_ids
     
-    # 小売 (NPC Retailers)
-    retail_ids = []
-    retail_rows = db.fetch_all("SELECT id FROM companies WHERE type='npc_retail'")
-    for r in retail_rows: retail_ids.append(r['id'])
+    # 小売 (NPC Retailers) - 上記で生成したIDリストを使用
+    retail_ids = npc_retail_ids
     
     retail_share = demand / len(retail_ids)
 
@@ -191,8 +209,9 @@ def run_seed():
     total_store_needs = 0
     total_office_needs = 0
     company_facilities_req = {} # {company_id: {factory: 0, store: 0, office: 0}}
-
-    def add_employees(company_id, c_type, share):
+    company_div_map = {} # {company_id: division_id} 施設紐付け用
+    
+    def add_employees(company_id, division_id, c_type, share):
         # 部署ごとの必要人数 (要件定義のコスト構造に基づく)
         staff_req = {}
         if c_type == 'maker':
@@ -226,7 +245,8 @@ def run_seed():
             staff_req[gb.DEPT_HR] = max(1, int((total_others / gb.HR_CAPACITY_PER_PERSON) * 2.0 / gb.NPC_SCALE_FACTOR))
 
         # CEO生成 (HR所属とする)
-        ceo = generate_random_npc(age=random.randint(40, 60), company_id=company_id, department=gb.DEPT_HR, role=gb.ROLE_CEO)
+        # CEOは共通部門(division_id=None)
+        ceo = generate_random_npc(age=random.randint(40, 60), company_id=company_id, division_id=None, department=gb.DEPT_HR, role=gb.ROLE_CEO)
         # CEOは能力高め
         ceo['management'] = random.randint(70, 100)
         ceo['executive'] = random.randint(70, 100)
@@ -248,7 +268,10 @@ def run_seed():
                 # 部長は各部署1人のみ
                 if i == 0: role = gb.ROLE_MANAGER
                 
-                npc = generate_random_npc(company_id=company_id, department=dept, role=role)
+                # 共通部門はdivision_id=None
+                target_div = division_id if dept not in [gb.DEPT_HR, gb.DEPT_PR, gb.DEPT_ACCOUNTING] else None
+                
+                npc = generate_random_npc(company_id=company_id, division_id=target_div, department=dept, role=role)
                 npc_data_list.append(tuple(npc[col] for col in NPC_COLUMNS))
         
         company_facilities_req[company_id] = c_fac_req
@@ -256,13 +279,19 @@ def run_seed():
 
     print("Generating Employees...")
     for mid in maker_ids:
+        # NPCメーカーは自動車専業とする
+        div_id = db.execute_query("INSERT INTO divisions (company_id, name, industry_key) VALUES (?, ?, ?)", (mid, "自動車事業部", "automotive"))
         demand_qty = maker_share_map.get(mid, demand / len(maker_ids))
-        req = add_employees(mid, 'maker', demand_qty)
+        req = add_employees(mid, div_id, 'maker', demand_qty)
+        company_div_map[mid] = div_id
         total_factory_needs += req['factory']
         total_office_needs += req['office']
 
     for rid in retail_ids:
-        req = add_employees(rid, 'retail', retail_share)
+        # 小売にも事業部を作成 (販売事業部)
+        div_id = db.execute_query("INSERT INTO divisions (company_id, name, industry_key) VALUES (?, ?, ?)", (rid, "販売事業部", "automotive"))
+        req = add_employees(rid, div_id, 'retail', retail_share)
+        company_div_map[rid] = div_id
         total_store_needs += req['store']
         total_office_needs += req['office']
 
@@ -295,8 +324,9 @@ def run_seed():
 
     # 4. 初期商品設計書 (各NPCメーカー)
     # 標準的なパーツ構成を作成
+    # 自動車(Sedan)用
     model_t_parts = {}
-    for part in gb.INDUSTRIES[gb.CURRENT_INDUSTRY]['parts']:
+    for part in auto_ind['categories'][auto_cat]['parts']:
         # Standard Materials Inc. を探す
         supplier = db.fetch_one("""
             SELECT id, trait_material_score, trait_cost_multiplier 
@@ -319,26 +349,26 @@ def run_seed():
     maker_design_map = {} # {maker_id: design_id} 小売在庫生成用
 
     for mid in maker_ids:
+        div_id = db.fetch_one("SELECT id FROM divisions WHERE company_id = ?", (mid,))['id']
         p_name = name_generator.generate_product_name()
         design_id = db.execute_query("""
-            INSERT INTO product_designs (company_id, name, material_score, concept_score, production_efficiency, base_price, sales_price, status, developed_week, parts_config)
-            VALUES (?, ?, 3.0, 3.0, 1.0, ?, ?, 'completed', 0, ?)
-        """, (mid, p_name, initial_base_price, initial_base_price, json.dumps(model_t_parts)))
+            INSERT INTO product_designs (company_id, division_id, category_key, name, material_score, concept_score, production_efficiency, base_price, sales_price, status, developed_week, parts_config)
+            VALUES (?, ?, ?, ?, 3.0, 3.0, 1.0, ?, ?, 'completed', 0, ?)
+        """, (mid, div_id, auto_cat, p_name, initial_base_price, initial_base_price, json.dumps(model_t_parts)))
         maker_design_map[mid] = design_id
 
         # 5. 初期在庫
-        # 2週分程度の在庫を持たせる
         demand_qty = maker_share_map.get(mid, demand / len(maker_ids))
         initial_stock = int(demand_qty * 2)
-        db.execute_query("INSERT INTO inventory (company_id, design_id, quantity, sales_price) VALUES (?, ?, ?, ?)", (mid, design_id, initial_stock, initial_base_price))
+        db.execute_query("INSERT INTO inventory (company_id, division_id, design_id, quantity, sales_price) VALUES (?, ?, ?, ?, ?)", (mid, div_id, design_id, initial_stock, initial_base_price))
 
     # プレイヤー企業用: 初期設計書のみ付与 (在庫なし)
     # これにより、ゲーム開始直後から生産活動が可能になる
     p_name = name_generator.generate_product_name()
     db.execute_query("""
-        INSERT INTO product_designs (company_id, name, material_score, concept_score, production_efficiency, base_price, sales_price, status, developed_week, parts_config)
-        VALUES (?, ?, 3.0, 3.0, 1.0, ?, ?, 'completed', 0, ?)
-    """, (player_id, p_name, initial_base_price, initial_base_price, json.dumps(model_t_parts)))
+        INSERT INTO product_designs (company_id, division_id, category_key, name, material_score, concept_score, production_efficiency, base_price, sales_price, status, developed_week, parts_config)
+        VALUES (?, ?, ?, ?, 3.0, 3.0, 1.0, ?, ?, 'completed', 0, ?)
+    """, (player_id, p_div_auto, auto_cat, p_name, initial_base_price, initial_base_price, json.dumps(model_t_parts)))
 
     # 5.5 初期在庫 (小売)
     # 小売も2週分の需要に対応できる在庫を持たせる
@@ -347,12 +377,13 @@ def run_seed():
         expected_retail_demand = int(gb.BASE_MARKET_DEMAND / len(retail_ids))
         
         for rid in retail_ids:
+            div_id = company_div_map.get(rid)
             for mid, did in maker_design_map.items():
                 # メーカーのシェアに応じて在庫を持つ
                 maker_share_pct = maker_share_map.get(mid, 0) / demand
                 stock_qty = int(expected_retail_demand * 2 * maker_share_pct)
-                db.execute_query("INSERT INTO inventory (company_id, design_id, quantity, sales_price) VALUES (?, ?, ?, ?)", 
-                                 (rid, did, stock_qty, initial_base_price))
+                db.execute_query("INSERT INTO inventory (company_id, division_id, design_id, quantity, sales_price) VALUES (?, ?, ?, ?, ?)", 
+                                 (rid, div_id, did, stock_qty, initial_base_price))
 
     # 6. 施設生成
     # 各企業に必要な施設を生成して割り当てる
@@ -362,18 +393,16 @@ def run_seed():
         # 自社用 (余裕を持って1.2倍)
         f_data = generate_facilities_data(int(req['factory'] * 1.2), int(req['store'] * 1.2), int(req['office'] * 1.2))
         # company_idとis_ownedを設定
+        # 事業部IDを取得 (NPCは1社1事業部前提)
+        div_id = company_div_map.get(cid)
+        
         for i in range(len(f_data)):
-            # f_data is list of tuples: (type, size, rent, access, is_owned, name)
-            # We need to insert company_id into the query or modify data
-            # DB schema: type, size, rent, access_score, is_owned, company_id, name
-            # generate_facilities_data returns tuples for INSERT without company_id
-            # Let's modify generate_facilities_data or just construct here.
-            # Actually generate_facilities_data returns (type, size, rent, access, 0, name)
-            # We want to set company_id and is_owned=0 (rented)
             ftype, size, rent, access, _, fname = f_data[i]
+            # 本社機能(HR, PR, Accounting)用のオフィス以外は事業部に紐付けるべきだが、
+            # 簡易化のため、NPCの施設はすべてその唯一の事業部に紐付ける
             # 賃貸契約済みとして登録
-            db.execute_query("INSERT INTO facilities (type, size, rent, access_score, is_owned, company_id, name) VALUES (?, ?, ?, ?, 0, ?, ?)", 
-                             (ftype, size, rent, access, cid, fname))
+            db.execute_query("INSERT INTO facilities (type, size, rent, access_score, is_owned, company_id, division_id, name) VALUES (?, ?, ?, ?, 0, ?, ?, ?)", 
+                             (ftype, size, rent, access, cid, div_id, fname))
 
     # 市場の空き物件 (全体需要の20%程度を追加)
     market_factory = int(total_factory_needs * 0.2)

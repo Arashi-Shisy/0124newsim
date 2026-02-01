@@ -31,6 +31,26 @@
                     <label>プロジェクト名</label>
                     <input type="text" name="name" class="form-control" placeholder="例: Model Y" required>
                 </div>
+                
+                <div class="form-group">
+                    <label>開発対象 (事業部・カテゴリ)</label>
+                    <select name="category_key" id="category-select" class="form-control" onchange="updatePartsList()">
+                        {% for div in player_divisions %}
+                            {% set ind = industries[div.industry_key] %}
+                            <optgroup label="{{ div.name }} ({{ ind.name }})">
+                                {% for cat_key, cat in ind.categories.items() %}
+                                <option value="{{ cat_key }}" data-industry="{{ div.industry_key }}" data-division="{{ div.id }}">
+                                    {{ cat.name }} (需要: {{ cat.base_demand }})
+                                </option>
+                                {% endfor %}
+                            </optgroup>
+                        {% endfor %}
+                    </select>
+                    <!-- Hidden inputs to pass industry/division based on selection -->
+                    <input type="hidden" name="industry_key" id="input-industry">
+                    <input type="hidden" name="division_id" id="input-division">
+                </div>
+
                 <div class="form-group">
                     <label>開発方針</label>
                     <select name="strategy" class="form-control">
@@ -41,23 +61,12 @@
                 </div>
                 
                 <h3>パーツ選定</h3>
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
-                    {% for part in parts_data %}
-                    <div class="form-group">
-                        <label>{{ part.label }} (基準: ¥{{ "{:,}".format(part.base_cost) }})</label>
-                        <select name="part_{{ part.key }}" class="form-control">
-                            {% for sup in suppliers[part.key] %}
-                            <option value="{{ sup.id }}">
-                                {{ sup.name }} [品質:{{ sup.trait_material_score }} / コスト:x{{ sup.trait_cost_multiplier }}]
-                            </option>
-                            {% endfor %}
-                        </select>
-                    </div>
-                    {% endfor %}
+                <div id="parts-container" style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+                    <!-- JS will populate this -->
                 </div>
                 
                 <div class="card-footer">
-                    <button type="submit" class="btn btn-primary">開発開始 (期間: {{ duration }}週)</button>
+                    <button type="submit" class="btn btn-primary" id="dev-start-btn">開発開始</button>
                 </div>
             </form>
         </div>
@@ -108,4 +117,64 @@
         </div>
     </div>
 </div>
+
+<script>
+    // Data passed from backend
+    const industries = {{ industries | tojson }};
+    const suppliers = {{ suppliers_json | safe }};
+
+    function updatePartsList() {
+        const select = document.getElementById('category-select');
+        const selectedOption = select.options[select.selectedIndex];
+        const catKey = select.value;
+        const indKey = selectedOption.getAttribute('data-industry');
+        const divId = selectedOption.getAttribute('data-division');
+
+        // Update hidden inputs
+        document.getElementById('input-industry').value = indKey;
+        document.getElementById('input-division').value = divId;
+
+        // Get parts definition
+        const category = industries[indKey].categories[catKey];
+        const parts = category.parts;
+        
+        const container = document.getElementById('parts-container');
+        container.innerHTML = '';
+
+        parts.forEach(part => {
+            const group = document.createElement('div');
+            group.className = 'form-group';
+            
+            const label = document.createElement('label');
+            label.innerText = `${part.label} (基準: ¥${part.base_cost.toLocaleString()})`;
+            group.appendChild(label);
+
+            const selectPart = document.createElement('select');
+            selectPart.name = `part_${part.key}`;
+            selectPart.className = 'form-control';
+
+            // Filter suppliers for this part category
+            const partSuppliers = suppliers[part.key] || [];
+            partSuppliers.forEach(sup => {
+                const opt = document.createElement('option');
+                opt.value = sup.id;
+                opt.innerText = `${sup.name} [品質:${sup.score} / コスト:x${sup.cost_mult}]`;
+                selectPart.appendChild(opt);
+            });
+
+            group.appendChild(selectPart);
+            container.appendChild(group);
+        });
+
+        // 開発期間の表示更新
+        const duration = category.development_duration;
+        const btn = document.getElementById('dev-start-btn');
+        if (btn) {
+            btn.innerText = `開発開始 (期間: ${duration}週)`;
+        }
+    }
+
+    // Initialize on load
+    document.addEventListener('DOMContentLoaded', updatePartsList);
+</script>
 {% endblock %}

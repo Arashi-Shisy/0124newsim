@@ -1,4 +1,4 @@
-# c:\0124newSIm\npc_logic.py
+# c:\0124newSIm\src\npc_logic.py
 # NPC企業および個人の意思決定ロジック
 
 import json
@@ -25,6 +25,10 @@ class NPCLogic:
         else:
             # フォールバック
             self.employees = db.fetch_all("SELECT * FROM npcs WHERE company_id = ?", (self.company_id,))
+            
+        # 事業部情報の取得
+        self.divisions = db.fetch_all("SELECT * FROM divisions WHERE company_id = ?", (self.company_id,))
+        
         self.phase = 'STABLE' # Default
 
     def _get_ceo_precision(self, stat_name):
@@ -222,6 +226,9 @@ class NPCLogic:
         if not target_dept:
             target_dept = random.choice(gb.DEPARTMENTS)
 
+        # ターゲット業界の特定 (最初の事業部の業界とする)
+        target_industry = self.divisions[0]['industry_key'] if self.divisions else 'automotive'
+
         # GROWTHフェーズなら採用枠を増やす
         if self.phase == 'GROWTH':
             offers_to_make = min(5, offers_to_make + 2)
@@ -264,7 +271,11 @@ class NPCLogic:
                     for stat in ['production', 'development', 'sales', 'hr', 'store_ops']:
                         perceived_stats[stat] = cand[stat] + random.uniform(-half_range, half_range)
 
-                    # ターゲット部署の能力値で評価
+                    # 業界適性の取得
+                    apts = json.loads(cand['aptitudes']) if cand['aptitudes'] else {}
+                    apt_val = apts.get(target_industry, 0.1)
+                    
+                    # ターゲット部署の能力値 * 適性 で評価
                     stat_val = 0
                     if target_dept == gb.DEPT_PRODUCTION: stat_val = perceived_stats['production']
                     elif target_dept == gb.DEPT_DEV: stat_val = perceived_stats['development']
@@ -272,6 +283,9 @@ class NPCLogic:
                     elif target_dept == gb.DEPT_HR: stat_val = perceived_stats['hr']
                     elif target_dept == gb.DEPT_STORE: stat_val = perceived_stats['store_ops']
                     else: stat_val = max(perceived_stats.values())
+                    
+                    # 適性を反映
+                    stat_val *= apt_val
                     
                     # ROI (能力/給与) でスコアリング
                     # 相手の希望給与を見る
@@ -389,9 +403,14 @@ class NPCLogic:
         designs = [d for d in designs if d['status'] == 'completed']
         if not designs: return
 
+        # 事業部ごとに処理
+        for div in self.divisions:
+            self._decide_production_for_division(current_week, designs, inventory, b2b_sales_history, market_total_sales_4w, economic_index, div)
+
+    def _decide_production_for_division(self, current_week, designs, inventory, b2b_sales_history, market_total_sales_4w, economic_index, division):
         # 生産能力の算出 (週あたりの生産可能台数)
         # 1. 施設容量チェック
-        facilities = db.fetch_all("SELECT size FROM facilities WHERE company_id = ? AND type = 'factory'", (self.company_id,))
+        facilities = db.fetch_all("SELECT size FROM facilities WHERE company_id = ? AND division_id = ? AND type = 'factory'", (self.company_id, division['id']))
         total_factory_size = sum(f['size'] for f in facilities)
         
         # フォールバック: 施設データがない場合でも、生産部員がいれば最低限(10)のキャパシティがあるとみなす
@@ -399,7 +418,7 @@ class NPCLogic:
             total_factory_size = 10
 
         # 2. 従業員取得と有効稼働数の計算
-        prod_employees = [e for e in self.employees if e['department'] == gb.DEPT_PRODUCTION]
+        prod_employees = [e for e in self.employees if e['department'] == gb.DEPT_PRODUCTION and e['division_id'] == division['id']]
         
         # 能力が高い順に工場に入れる（あふれた従業員は生産に寄与しない）
         prod_employees.sort(key=lambda x: x['production'], reverse=True)
@@ -410,7 +429,10 @@ class NPCLogic:
             # 能力50で基準効率(0.17台)が出る計算
             total_capacity += (emp['production'] / 50.0) * gb.BASE_PRODUCTION_EFFICIENCY * gb.NPC_SCALE_FACTOR
         
-        for design in designs:
+        # この事業部の製品のみ対象
+        div_designs = [d for d in designs if d['division_id'] == division['id']]
+        
+        for design in div_designs:
             # キャパシティが1台分未満でも、確率的に1台作れるようにする（あるいは最低1台は作れるようにする）
             if total_capacity <= 0.1: break
 
@@ -440,7 +462,17 @@ class NPCLogic:
             ceo_precision = self._get_ceo_precision('production')
             error_range = 0.3 * (1.0 - ceo_precision) # 最大±30%
             prediction_error = random.uniform(1.0 - error_range, 1.0 + error_range)
-            estimated_market_demand = gb.BASE_MARKET_DEMAND * economic_index * prediction_error
+            
+            # カテゴリ需要の取得
+            cat_key = design['category_key']
+            # 簡易的にIndustries定義から取得 (本来はmarket_trendsから取るべきだが)
+            base_demand = 1000 # fallback
+            for ind in gb.INDUSTRIES.values():
+                if cat_key in ind['categories']:
+                    base_demand = ind['categories'][cat_key]['base_demand']
+                    break
+            
+            estimated_market_demand = base_demand * economic_index * prediction_error
             
             # 目標シェア: 現状維持～微増を目指す (最低でも5%は確保しようとする)
             target_share = max(current_share * 1.05, 0.05)
@@ -656,12 +688,17 @@ class NPCLogic:
 
         if self.phase == 'CRISIS': return # 危機時は新規開発凍結
 
+        # 事業部ごとに処理
+        for div in self.divisions:
+            self._decide_development_for_division(current_week, designs, div)
+
+    def _decide_development_for_division(self, current_week, designs, division):
         # 開発中のプロジェクトがあるか確認
-        is_developing = any(d['status'] == 'developing' for d in designs)
+        is_developing = any(d['status'] == 'developing' and d['division_id'] == division['id'] for d in designs)
         if is_developing: return # 同時開発は1本まで（簡易化）
 
         # 既存の製品数を確認
-        completed_count = sum(1 for d in designs if d['status'] == 'completed')
+        completed_count = sum(1 for d in designs if d['status'] == 'completed' and d['division_id'] == division['id'])
         
         # 製品が2つ未満、またはランダム（新陳代謝）で新規開発
         if completed_count < 2 or random.random() < 0.05:
@@ -670,12 +707,21 @@ class NPCLogic:
             # コンセプトスコア等は開発完了時にStrategyに基づいて決定するため、ここでは仮置き
             
             # サプライヤー選択
+            # 事業部の業界・カテゴリ定義を取得
+            ind_key = division['industry_key']
+            # カテゴリはランダムに選定（または既存製品が少ないもの）
+            categories = gb.INDUSTRIES[ind_key]['categories']
+            cat_key = random.choice(list(categories.keys()))
+            cat_def = categories[cat_key]
+            
             parts_config = {}
             total_score = 0
-            parts_def = gb.INDUSTRIES[gb.CURRENT_INDUSTRY]['parts']
+            parts_def = cat_def['parts']
             
             for part in parts_def:
                 suppliers = db.fetch_all("SELECT id, trait_material_score, trait_cost_multiplier FROM companies WHERE type = 'system_supplier' AND part_category = ?", (part['key'],))
+                if not suppliers:
+                    return # サプライヤーが見つからない場合は開発を中止
                 supplier = random.choice(suppliers)
                 
                 # 部品調達のブレ (Quality/Cost Fluctuation): ロット差や交渉による変動 (±10%)
@@ -701,10 +747,10 @@ class NPCLogic:
             # DBに登録 (status='developing')
             # base_price, sales_price は完成時に確定するため仮置き
             db.execute_query("""
-                INSERT INTO product_designs 
-                (company_id, name, material_score, concept_score, production_efficiency, base_price, sales_price, status, strategy, developed_week, parts_config)
-                VALUES (?, ?, ?, 0, 0, 0, 0, 'developing', ?, ?, ?)
-            """, (self.company_id, name, avg_material_score, strategy, current_week, json.dumps(parts_config)))
+                INSERT INTO product_designs
+                (company_id, division_id, category_key, name, material_score, concept_score, production_efficiency, base_price, sales_price, status, strategy, developed_week, parts_config)
+                VALUES (?, ?, ?, ?, ?, 0, 0, 0, 0, 'developing', ?, ?, ?)
+            """, (self.company_id, division['id'], cat_key, name, avg_material_score, strategy, current_week, json.dumps(parts_config)))
             db.log_file_event(current_week, self.company_id, "Development Start", f"Started development of {name}")
             db.increment_weekly_stat(current_week, self.company_id, 'development_ordered', 1)
 
@@ -769,6 +815,9 @@ class NPCLogic:
         for fac in facilities:
             if fac['type'] in current_cap:
                 current_cap[fac['type']] += fac['size']
+        
+        # ターゲット事業部 (NPCは単一事業部と仮定)
+        target_div_id = self.divisions[0]['id'] if self.divisions else None
 
         # 不足分を計算して契約 (賃貸)
         def acquire_facility(ftype, needed, current, rent_unit_price):
@@ -784,19 +833,24 @@ class NPCLogic:
                 
                 if available:
                     # 購入判断: 資金に余裕があれば購入する
+                    # 施設割り当て: NPCは単一事業部制を基本とするため、すべての施設をターゲット事業部に割り当てる
+                    assign_div_id = target_div_id
+
                     # 余裕基準: 購入後も資金が1億円以上残る
                     purchase_price = available['rent'] * gb.FACILITY_PURCHASE_MULTIPLIER
                     
                     if self.company['funds'] > purchase_price + 100000000:
                         # 購入
-                        db.execute_query("UPDATE facilities SET company_id = ?, is_owned = 1 WHERE id = ?", (self.company_id, available['id']))
+                        db.execute_query("UPDATE facilities SET company_id = ?, division_id = ?, is_owned = 1 WHERE id = ?", 
+                                         (self.company_id, assign_div_id, available['id']))
                         db.execute_query("UPDATE companies SET funds = funds - ? WHERE id = ?", (purchase_price, self.company_id))
                         db.execute_query("INSERT INTO account_entries (week, company_id, category, amount) VALUES (?, ?, 'facility_purchase', ?)",
                                          (current_week, self.company_id, purchase_price))
                         db.log_file_event(current_week, self.company_id, "Facility", f"Purchased {ftype} (Size: {available['size']})")
                     else:
                         # 賃貸
-                        db.execute_query("UPDATE facilities SET company_id = ?, is_owned = 0 WHERE id = ?", (self.company_id, available['id']))
+                        db.execute_query("UPDATE facilities SET company_id = ?, division_id = ?, is_owned = 0 WHERE id = ?", 
+                                         (self.company_id, assign_div_id, available['id']))
                         db.log_file_event(current_week, self.company_id, "Facility", f"Rented {ftype} (Size: {available['size']})")
 
         acquire_facility('factory', factory_needs * gb.NPC_SCALE_FACTOR, current_cap['factory'], gb.RENT_FACTORY)

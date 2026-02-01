@@ -13,6 +13,14 @@
                 <span class="value"><a href="{{ url_for('company_detail', company_id=product.maker_id) }}" style="color: #4db8ff;">{{ product.maker_name }}</a></span>
             </div>
             <div class="stat-row">
+                <span class="label">カテゴリ</span>
+                <span class="value">
+                    {% set ind = industries[product.industry_key] %}
+                    {% set cat = ind.categories[product.category_key] %}
+                    {{ cat.name if cat else product.category_key }}
+                </span>
+            </div>
+            <div class="stat-row">
                 <span class="label">開発完了</span>
                 <span class="value">{{ product.developed_week | format_week }}</span>
             </div>

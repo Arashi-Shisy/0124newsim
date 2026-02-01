@@ -58,6 +58,42 @@
                 {% endfor %}
             </div>
         </div>
+
+        <!-- 事業部別能力レポート -->
+        {% if caps.divisions %}
+        <div style="margin-top: 20px; border-top: 1px solid var(--border-color); padding-top: 15px;">
+            <h3 style="margin-bottom: 15px; color: #d0d0ff;">事業部別能力 (Divisional Capabilities)</h3>
+            <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 20px;">
+                {% for div_id, div_cap in caps.divisions.items() %}
+                <div style="background: rgba(255,255,255,0.03); border: 1px solid var(--border-color); border-radius: 8px; padding: 15px;">
+                    <h4 style="margin: 0 0 10px 0; color: var(--text-main);">{{ div_cap.name }}</h4>
+                    <table class="tooltip-table">
+                        <tr>
+                            <td>生産 (Production)</td>
+                            <td style="color: #4db8ff;">{{ div_cap.production|int }}</td>
+                            <td>Cap: {{ div_cap.get('production_capacity', 0)|int }}</td>
+                        </tr>
+                        <tr>
+                            <td>開発 (Development)</td>
+                            <td style="color: #4db8ff;">{{ div_cap.development|int }}</td>
+                            <td>Cap: {{ div_cap.get('development_capacity', 0)|int }} <span style="font-size:0.8em; color:#aaa;">(Req: {{ div_cap.requirements.development|int }})</span></td>
+                        </tr>
+                        <tr>
+                            <td>営業 (Sales)</td>
+                            <td style="color: #4db8ff;">{{ div_cap.sales|int }}</td>
+                            <td>Cap: {{ div_cap.get('sales_capacity', 0)|int }} <span style="font-size:0.8em; color:#aaa;">(Req: {{ div_cap.requirements.sales|int }})</span></td>
+                        </tr>
+                        <tr>
+                            <td>店舗 (Store)</td>
+                            <td style="color: #4db8ff;">{{ div_cap.store_ops|int }}</td>
+                            <td>Cap: {{ div_cap.get('store_ops_capacity', 0)|int }}</td>
+                        </tr>
+                    </table>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
         
         <!-- 施設稼働状況 -->
         <div style="margin-top: 15px; border-top: 1px solid var(--border-color); padding-top: 10px;">
@@ -119,6 +155,7 @@
                 <tr>
                     <th style="width: 30px;" class="no-sort"></th>
                     <th>管掌 (Dept)</th>
+                    <th>事業部</th>
                     <th>役職</th>
                     <th>氏名</th>
                     <th>年齢</th>
@@ -130,9 +167,12 @@
             </thead>
             <tbody>
                 {% for emp in employees if emp.role in ['ceo', 'cxo'] %}
-                <tr onclick="selectRow(this, '{{ emp.id }}', '{{ emp.name }}', '{{ emp.department }}', '{{ emp.role }}', '{{ emp.salary }}')" data-dept="{{ emp.department }}" data-role="{{ emp.role }}" data-name="{{ emp.name }}">
+                {% set ns = namespace(div_name='共通部門') %}
+                {% for d in player_divisions %}{% if d.id == emp.division_id %}{% set ns.div_name = d.name %}{% endif %}{% endfor %}
+                <tr onclick="selectRow(this, '{{ emp.id }}', '{{ emp.name }}', '{{ emp.department }}', '{{ emp.role }}', '{{ emp.salary }}', '{{ emp.division_id }}')" data-dept="{{ emp.department }}" data-role="{{ emp.role }}" data-name="{{ emp.name }}">
                     <td><input type="radio" name="selected_emp" value="{{ emp.id }}"></td>
                     <td>{{ emp.department }}</td>
+                    <td>{{ ns.div_name }}</td>
                     <td>{{ emp.role }}</td>
                     <td><a href="{{ url_for('npc_detail', npc_id=emp.id) }}" style="color: #4db8ff; font-weight: bold;" onclick="event.stopPropagation()">{{ emp.name }}</a></td>
                     <td>{{ emp.age }}</td>
@@ -161,30 +201,33 @@
                 <tr>
                     <th style="width: 30px;" class="no-sort"></th>
                     <th class="sortable" onclick="sortTable(this, 1)">配属</th>
-                    <th class="sortable" onclick="sortTable(this, 2)">役職</th>
-                    <th class="sortable" onclick="sortTable(this, 3)">氏名</th>
-                    <th class="sortable" onclick="sortTable(this, 4, 'number')">年齢</th>
-                    <th class="sortable" onclick="sortTable(this, 5, 'number')">給与</th>
-                    <th class="sortable" onclick="sortTable(this, 6, 'number')">忠誠度</th>
-                    <th class="sortable" onclick="sortTable(this, 7, 'number')">勤勉さ</th>
-                    <th class="sortable" onclick="sortTable(this, 8, 'number')">適応力</th>
-                    <th class="sortable" onclick="sortTable(this, 9, 'number')">生産力</th>
-                    <th class="sortable" onclick="sortTable(this, 10, 'number')">店舗</th>
-                    <th class="sortable" onclick="sortTable(this, 11, 'number')">営業</th>
-                    <th class="sortable" onclick="sortTable(this, 12, 'number')">人事</th>
-                    <th class="sortable" onclick="sortTable(this, 13, 'number')">開発</th>
-                    <th class="sortable" onclick="sortTable(this, 14, 'number')">広報</th>
-                    <th class="sortable" onclick="sortTable(this, 15, 'number')">経理</th>
-                    <th class="sortable" onclick="sortTable(this, 16, 'number')">マネジ</th>
-                    <th class="sortable" onclick="sortTable(this, 17, 'number')">業界</th>
-                    <th class="sortable" onclick="sortTable(this, 18, 'number')">役員</th>
+                    <th class="sortable" onclick="sortTable(this, 2)">事業部</th>
+                    <th class="sortable" onclick="sortTable(this, 3)">役職</th>
+                    <th class="sortable" onclick="sortTable(this, 4)">氏名</th>
+                    <th class="sortable" onclick="sortTable(this, 5, 'number')">年齢</th>
+                    <th class="sortable" onclick="sortTable(this, 6, 'number')">給与</th>
+                    <th class="sortable" onclick="sortTable(this, 7, 'number')">忠誠度</th>
+                    <th class="sortable" onclick="sortTable(this, 8, 'number')">勤勉さ</th>
+                    <th class="sortable" onclick="sortTable(this, 9, 'number')">適応力</th>
+                    <th class="sortable" onclick="sortTable(this, 10, 'number')">生産力</th>
+                    <th class="sortable" onclick="sortTable(this, 11, 'number')">店舗</th>
+                    <th class="sortable" onclick="sortTable(this, 12, 'number')">営業</th>
+                    <th class="sortable" onclick="sortTable(this, 13, 'number')">人事</th>
+                    <th class="sortable" onclick="sortTable(this, 14, 'number')">開発</th>
+                    <th class="sortable" onclick="sortTable(this, 15, 'number')">広報</th>
+                    <th class="sortable" onclick="sortTable(this, 16, 'number')">経理</th>
+                    <th class="sortable" onclick="sortTable(this, 17, 'number')">マネジ</th>
+                    <th class="sortable" onclick="sortTable(this, 19, 'number')">役員</th>
                 </tr>
             </thead>
             <tbody>
                 {% for emp in employees if emp.role not in ['ceo', 'cxo'] %}
-                <tr onclick="selectRow(this, '{{ emp.id }}', '{{ emp.name }}', '{{ emp.department }}', '{{ emp.role }}', '{{ emp.salary }}')" data-dept="{{ emp.department }}" data-role="{{ emp.role }}" data-name="{{ emp.name }}">
+                {% set ns = namespace(div_name='共通部門') %}
+                {% for d in player_divisions %}{% if d.id == emp.division_id %}{% set ns.div_name = d.name %}{% endif %}{% endfor %}
+                <tr onclick="selectRow(this, '{{ emp.id }}', '{{ emp.name }}', '{{ emp.department }}', '{{ emp.role }}', '{{ emp.salary }}', '{{ emp.division_id }}')" data-dept="{{ emp.department }}" data-role="{{ emp.role }}" data-name="{{ emp.name }}">
                     <td><input type="radio" name="selected_emp" value="{{ emp.id }}"></td>
                     <td>{{ emp.department }}</td>
+                    <td>{{ ns.div_name }}</td>
                     <td>{{ emp.role }}</td>
                     <td><a href="{{ url_for('npc_detail', npc_id=emp.id) }}" style="color: #4db8ff; font-weight: bold;" onclick="event.stopPropagation()">{{ emp.name }}</a></td>
                     <td>{{ emp.age }}</td>
@@ -205,7 +248,6 @@
                     <td data-value="{{ emp.pr | perceived_value(hr_power) }}">{{ emp.pr | ability_range_colored(hr_power) }}</td>
                     <td data-value="{{ emp.accounting | perceived_value(hr_power) }}">{{ emp.accounting | ability_range_colored(hr_power) }}</td>
                     <td data-value="{{ emp.management | perceived_value(hr_power) }}">{{ emp.management | ability_range_colored(hr_power) }}</td>
-                    <td data-value="{{ emp.industry_aptitude }}">{{ emp.industry_aptitude|round(1) }}</td>
                     <td data-value="{{ emp.executive | perceived_value(hr_power) }}">{{ emp.executive | ability_range_colored(hr_power) }}</td>
                 </tr>
                 {% endfor %}
@@ -228,6 +270,15 @@
                 <div class="form-group">
                     <label>現在の配属</label>
                     <div class="current-value" id="dept-current">生産部 メンバー</div>
+                </div>
+                <div class="form-group">
+                    <label>事業部 (直接部門のみ)</label>
+                    <select name="new_division_id" id="dept-new-div" class="form-control">
+                        <option value="">共通部門 (本社)</option>
+                        {% for div in player_divisions %}
+                        <option value="{{ div.id }}">{{ div.name }}</option>
+                        {% endfor %}
+                    </select>
                 </div>
                 <div class="form-group">
                     <label>変更後の配属</label>
@@ -284,13 +335,13 @@
 <script>
     let selectedNpc = null;
 
-    function selectRow(row, id, name, dept, role, salary) {
+    function selectRow(row, id, name, dept, role, salary, divId) {
         // 選択状態の更新
         document.querySelectorAll('tr').forEach(r => r.classList.remove('selected'));
         row.classList.add('selected');
         row.querySelector('input[type="radio"]').checked = true;
 
-        selectedNpc = { id, name, dept, role, salary };
+        selectedNpc = { id, name, dept, role, salary, divId };
     }
 
     function openDeptModal() {
@@ -302,6 +353,7 @@
         // 初期値を現在の値に設定
         document.getElementById('dept-new-dept').value = selectedNpc.dept;
         document.getElementById('dept-new-role').value = selectedNpc.role;
+        document.getElementById('dept-new-div').value = selectedNpc.divId || "";
         
         document.getElementById('modal-dept').style.display = 'flex';
     }

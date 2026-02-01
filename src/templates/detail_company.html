@@ -13,6 +13,10 @@
                 <span class="value">{{ comp.type }}</span>
             </div>
             <div class="stat-row">
+                <span class="label">業界</span>
+                <span class="value">{{ industries[comp.industry].name if comp.industry in industries else comp.industry }}</span>
+            </div>
+            <div class="stat-row">
                 <span class="label">資金</span>
                 <span class="value">¥{{ "{:,}".format(comp.funds|int) }}</span>
             </div>
@@ -86,6 +90,78 @@
         </div>
     </div>
     {% endif %}
+
+    <!-- 財務諸表 (PL) -->
+    <div class="card card-large">
+        <div class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
+            <h2 style="margin: 0;">損益計算書 ({{ report_data.label }})</h2>
+            <div style="display: flex; gap: 5px;">
+                <a href="{{ url_for('company_detail', company_id=comp.id, period='quarterly') }}" class="btn btn-small {{ 'btn-primary' if period == 'quarterly' else 'btn-secondary' }}">四半期</a>
+                <a href="{{ url_for('company_detail', company_id=comp.id, period='yearly') }}" class="btn btn-small {{ 'btn-primary' if period == 'yearly' else 'btn-secondary' }}">通期</a>
+            </div>
+        </div>
+        <div class="card-body">
+            <div style="display: flex; justify-content: space-between; margin-bottom: 10px;">
+                {% if report_data.prev_target %}
+                <a href="{{ url_for('company_detail', company_id=comp.id, period=period, target=report_data.prev_target) }}" class="btn btn-small btn-secondary">&lt; 前へ</a>
+                {% else %}
+                <span class="btn btn-small btn-secondary" style="opacity: 0.5; cursor: default;">&lt; 前へ</span>
+                {% endif %}
+                
+                {% if report_data.next_target %}
+                <a href="{{ url_for('company_detail', company_id=comp.id, period=period, target=report_data.next_target) }}" class="btn btn-small btn-secondary">次へ &gt;</a>
+                {% else %}
+                <span class="btn btn-small btn-secondary" style="opacity: 0.5; cursor: default;">次へ &gt;</span>
+                {% endif %}
+            </div>
+
+            <table class="data-table" style="width: 100%;">
+                <tbody>
+                    <tr>
+                        <td>売上高</td>
+                        <td style="text-align: right;">¥{{ "{:,}".format(report_data.pl.revenue|int) }}</td>
+                    </tr>
+                    <tr>
+                        <td>売上原価</td>
+                        <td style="text-align: right; color: #e94560;">▲ ¥{{ "{:,}".format(report_data.pl.cogs|int) }}</td>
+                    </tr>
+                    <tr style="font-weight: bold; background-color: rgba(255,255,255,0.05);">
+                        <td>売上総利益</td>
+                        <td style="text-align: right;">¥{{ "{:,}".format(report_data.pl.gross_profit|int) }}</td>
+                    </tr>
+                    
+                    <tr><td colspan="2" style="height: 5px;"></td></tr>
+                    
+                    <tr>
+                        <td style="padding-left: 20px;">販売費及び一般管理費</td>
+                        <td style="text-align: right; color: #e94560;">
+                            {% set sga = report_data.pl.labor + report_data.pl.rent + report_data.pl.ad + report_data.pl.other_sga %}
+                            ▲ ¥{{ "{:,}".format(sga|int) }}
+                        </td>
+                    </tr>
+                    <tr style="font-weight: bold; background-color: rgba(255,255,255,0.05);">
+                        <td>営業利益</td>
+                        <td style="text-align: right; color: {{ '#4db8ff' if report_data.pl.operating_profit >= 0 else '#e94560' }};">
+                            ¥{{ "{:,}".format(report_data.pl.operating_profit|int) }}
+                        </td>
+                    </tr>
+
+                    <tr><td colspan="2" style="height: 5px;"></td></tr>
+
+                    <tr>
+                        <td>営業外損益 (利息等)</td>
+                        <td style="text-align: right; color: #e94560;">▲ ¥{{ "{:,}".format(report_data.pl.interest|int) }}</td>
+                    </tr>
+                    <tr style="font-weight: bold; font-size: 1.1em; border-top: 1px solid var(--border-color);">
+                        <td>当期純利益</td>
+                        <td style="text-align: right; color: {{ '#4db8ff' if report_data.pl.net_profit >= 0 else '#e94560' }};">
+                            ¥{{ "{:,}".format(report_data.pl.net_profit|int) }}
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
 
     <div class="card card-large">
         <div class="card-header">

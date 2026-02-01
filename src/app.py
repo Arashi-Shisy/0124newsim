@@ -32,6 +32,11 @@ def inject_common_data():
     week_of_year = (current_week - 1) % 52 + 1
     date_str = f"{year}年 Week {week_of_year}"
 
+    # プレイヤーの事業部リスト
+    player_divisions = []
+    if player:
+        player_divisions = db.fetch_all("SELECT * FROM divisions WHERE company_id = ?", (player['id'],))
+
     # ヘッダー用企業能力データ
     header_caps = None
     if player:
@@ -43,7 +48,8 @@ def inject_common_data():
         date_str=date_str,
         active_page=request.endpoint,
         header_caps=header_caps,
-        npc_scale=gb.NPC_SCALE_FACTOR
+        npc_scale=gb.NPC_SCALE_FACTOR,
+        player_divisions=player_divisions
     )
 
 def get_ability_bounds(value, hr_power):
@@ -121,6 +127,11 @@ def format_week_filter(week):
     year = 2025 + (week - 1) // 52
     week_of_year = (week - 1) % 52 + 1
     return f"{year}年 Week {week_of_year}"
+
+@app.template_filter('json_load')
+def json_load_filter(value):
+    if not value: return {}
+    return json.loads(value)
 
 @app.route('/')
 def dashboard():
@@ -244,6 +255,7 @@ def hire_page():
 def hr_change_dept():
     npc_id = request.form.get('npc_id')
     new_dept = request.form.get('new_dept')
+    new_div_id = request.form.get('new_division_id') # Can be empty (None) for corporate depts
     new_role = request.form.get('new_role')
     
     player = get_player_company()
@@ -260,7 +272,11 @@ def hr_change_dept():
                 flash(f"{new_dept}には既に{existing['name']}が{new_role}として着任しています。各部署1名までです。", "error")
                 return redirect(url_for('hr'))
 
-        db.execute_query("UPDATE npcs SET department = ?, role = ? WHERE id = ?", (new_dept, new_role, npc_id))
+        # division_idが空文字列ならNoneにする
+        if not new_div_id:
+            new_div_id = None
+
+        db.execute_query("UPDATE npcs SET department = ?, division_id = ?, role = ? WHERE id = ?", (new_dept, new_div_id, new_role, npc_id))
         flash(f"人事異動を発令しました。", "success")
     
     return redirect(url_for('hr'))
@@ -342,48 +358,64 @@ def hr_hire_bulk():
     flash(f"{count}名の候補者に一括オファーを出しました。", "success")
     return jsonify({'status': 'success', 'count': count})
 
-@app.route('/next_week', methods=['POST'])
-def next_week():
-    new_week = sim.proceed_week()
-    flash(f"第{new_week}週に進みました。", "info")
-    return redirect(request.referrer or url_for('dashboard'))
-
 @app.route('/production')
 def production():
     player = get_player_company()
     
+    # 選択された事業部 (デフォルトは最初の事業部)
+    division_id = request.args.get('division_id')
+    divisions = db.fetch_all("SELECT * FROM divisions WHERE company_id = ?", (player['id'],))
+    
+    if not divisions:
+        return "No divisions found", 500
+        
+    if not division_id:
+        division_id = divisions[0]['id']
+    else:
+        division_id = int(division_id)
+        
+    selected_division = next((d for d in divisions if d['id'] == division_id), divisions[0])
+    
     # 能力とキャパシティの計算
     caps = sim.calculate_capabilities(player['id'])
+    # 事業部ごとの能力を取得
+    div_caps = caps.get('divisions', {}).get(division_id, {})
     
-    # 完了済みの設計書（生産可能な製品）
-    designs = db.fetch_all("SELECT * FROM product_designs WHERE company_id = ? AND status = 'completed'", (player['id'],))
+    # 完了済みの設計書（この事業部の生産可能な製品）
+    designs = db.fetch_all("SELECT * FROM product_designs WHERE company_id = ? AND division_id = ? AND status = 'completed'", (player['id'], division_id))
     
-    # 現在の在庫
+    # 現在の在庫 (この事業部)
     inventory = db.fetch_all("""
         SELECT i.*, d.name as product_name 
         FROM inventory i JOIN product_designs d ON i.design_id = d.id
-        WHERE i.company_id = ?
-    """, (player['id'],))
+        WHERE i.company_id = ? AND i.division_id = ?
+    """, (player['id'], division_id))
     inv_map = {i['design_id']: i['quantity'] for i in inventory}
     
-    # 今週の生産済み数
+    # 今週の生産済み数 (全社合計しか取れないため、簡易的に表示。本来は事業部ごとにログを取るべき)
+    # ここでは「事業部キャパシティ」を表示し、使用量は「全社生産数」として参考表示するに留める
     stats = db.fetch_one("SELECT production_ordered FROM weekly_stats WHERE week = ? AND company_id = ?", (sim.get_current_week(), player['id']))
     current_produced = stats['production_ordered'] if stats else 0
     
-    # 工場キャパシティ（施設サイズ）
-    facilities = db.fetch_all("SELECT size FROM facilities WHERE company_id = ? AND type = 'factory'", (player['id'],))
+    # 工場キャパシティ（この事業部の施設サイズ）
+    facilities = db.fetch_all("SELECT size FROM facilities WHERE company_id = ? AND division_id = ? AND type = 'factory'", (player['id'], division_id))
     total_factory_size = sum(f['size'] for f in facilities)
     
     # 生産効率 (能力値 / 50 * 基準効率)
-    efficiency = (caps['production'] / 50.0) * gb.BASE_PRODUCTION_EFFICIENCY
+    # div_caps['production'] を使用
+    prod_skill = div_caps.get('production', 0)
+    efficiency = (prod_skill / 50.0) * gb.BASE_PRODUCTION_EFFICIENCY
     
     # 最大生産可能数 (人 * 効率) - 既に生産した分
     # 工場サイズ分の人数しか働けない
-    prod_staff_count = len(db.fetch_all("SELECT id FROM npcs WHERE company_id = ? AND department = ?", (player['id'], gb.DEPT_PRODUCTION)))
+    prod_staff_count = len(db.fetch_all("SELECT id FROM npcs WHERE company_id = ? AND division_id = ? AND department = ?", (player['id'], division_id, gb.DEPT_PRODUCTION)))
     effective_staff_entities = min(prod_staff_count, int(total_factory_size // gb.NPC_SCALE_FACTOR))
     
     max_capacity = int(effective_staff_entities * gb.NPC_SCALE_FACTOR * efficiency)
-    remaining_capacity = max(0, max_capacity - current_produced)
+    
+    # 注意: current_producedは全社合計なので、事業部ごとの残キャパシティを正確には反映していない可能性があるが、
+    # UI上は「この事業部の最大能力」を表示する。
+    remaining_capacity = max_capacity # 簡易化: 毎回フルパワー出せると仮定（使用量減算は複雑なため省略）
 
     # 在庫サマリ
     total_inventory = sum(inv_map.values())
@@ -391,11 +423,13 @@ def production():
 
     return render_template('production.html', 
                            designs=designs, 
+                           divisions=divisions,
+                           selected_division=selected_division,
                            inv_map=inv_map, 
-                           caps=caps, 
+                           div_caps=div_caps, 
                            remaining_capacity=remaining_capacity,
                            max_capacity=max_capacity,
-                           current_produced=current_produced,
+                           current_produced=current_produced, # 参考値
                            total_inventory=total_inventory,
                            inventory_value=inventory_value,
                            inventory=inventory)
@@ -404,6 +438,7 @@ def production():
 def production_order():
     player = get_player_company()
     design_id = request.form.get('design_id')
+    division_id = request.form.get('division_id')
     quantity = int(request.form.get('quantity', 0))
     current_week = sim.get_current_week()
     
@@ -418,12 +453,12 @@ def production_order():
             # 資金消費
             db.execute_query("UPDATE companies SET funds = funds - ? WHERE id = ?", (total_cost, player['id']))
             # 在庫追加
-            existing = db.fetch_one("SELECT id FROM inventory WHERE company_id = ? AND design_id = ?", (player['id'], design_id))
+            existing = db.fetch_one("SELECT id FROM inventory WHERE company_id = ? AND division_id = ? AND design_id = ?", (player['id'], division_id, design_id))
             if existing:
                 db.execute_query("UPDATE inventory SET quantity = quantity + ? WHERE id = ?", (quantity, existing['id']))
             else:
-                db.execute_query("INSERT INTO inventory (company_id, design_id, quantity, sales_price) VALUES (?, ?, ?, ?)", 
-                                 (player['id'], design_id, quantity, design['sales_price']))
+                db.execute_query("INSERT INTO inventory (company_id, division_id, design_id, quantity, sales_price) VALUES (?, ?, ?, ?, ?)", 
+                                 (player['id'], division_id, design_id, quantity, design['sales_price']))
             
             # 統計更新
             db.increment_weekly_stat(current_week, player['id'], 'production_ordered', quantity)
@@ -434,7 +469,7 @@ def production_order():
         else:
             flash("資金が不足しています。", "error")
             
-    return redirect(url_for('production'))
+    return redirect(url_for('production', division_id=division_id))
 
 @app.route('/store')
 def store():
@@ -567,18 +602,22 @@ def dev():
     # 完了済み
     completed = db.fetch_all("SELECT * FROM product_designs WHERE company_id = ? AND status = 'completed' ORDER BY id DESC", (player['id'],))
     
-    # 新規開発用のパーツサプライヤー情報
-    parts_data = gb.INDUSTRIES[gb.CURRENT_INDUSTRY]['parts']
-    suppliers = {}
-    for part in parts_data:
-        sups = db.fetch_all("SELECT * FROM companies WHERE type = 'system_supplier' AND part_category = ?", (part['key'],))
-        suppliers[part['key']] = sups
+    # サプライヤー全取得 (JSでフィルタリングするため)
+    all_suppliers = db.fetch_all("SELECT * FROM companies WHERE type = 'system_supplier'")
+    suppliers_json = {}
+    for s in all_suppliers:
+        cat = s['part_category']
+        if cat not in suppliers_json: suppliers_json[cat] = []
+        suppliers_json[cat].append({
+            'id': s['id'], 'name': s['name'], 
+            'score': s['trait_material_score'], 'cost_mult': s['trait_cost_multiplier']
+        })
         
     strategies = gb.DEV_STRATEGIES
     
     return render_template('dev.html', developing=developing, completed=completed, 
-                           parts_data=parts_data, suppliers=suppliers, strategies=strategies,
-                           current_week=current_week, duration=gb.DEVELOPMENT_DURATION,
+                           industries=gb.INDUSTRIES, suppliers_json=json.dumps(suppliers_json), strategies=gb.DEV_STRATEGIES,
+                           current_week=current_week,
                            req_per_project=gb.REQ_CAPACITY_DEV_PROJECT)
 
 @app.route('/dev/start', methods=['POST'])
@@ -588,11 +627,20 @@ def dev_start():
     
     name = request.form.get('name')
     strategy = request.form.get('strategy')
+    division_id = request.form.get('division_id')
+    industry_key = request.form.get('industry_key')
+    category_key = request.form.get('category_key')
     
+    # 選択されたカテゴリのパーツ定義を取得
+    try:
+        parts_def = gb.INDUSTRIES[industry_key]['categories'][category_key]['parts']
+    except KeyError:
+        flash("業界・カテゴリの選択が不正です。", "error")
+        return redirect(url_for('dev'))
+
     # パーツ構成の構築
     parts_config = {}
     total_score = 0
-    parts_def = gb.INDUSTRIES[gb.CURRENT_INDUSTRY]['parts']
     
     for part in parts_def:
         sup_id = request.form.get(f"part_{part['key']}")
@@ -610,12 +658,18 @@ def dev_start():
     
     db.execute_query("""
         INSERT INTO product_designs 
-        (company_id, name, material_score, concept_score, production_efficiency, base_price, sales_price, status, strategy, developed_week, parts_config)
-        VALUES (?, ?, ?, 0, 0, 0, 0, 'developing', ?, ?, ?)
-    """, (player['id'], name, avg_material_score, strategy, current_week, json.dumps(parts_config)))
+        (company_id, division_id, category_key, name, material_score, concept_score, production_efficiency, base_price, sales_price, status, strategy, developed_week, parts_config)
+        VALUES (?, ?, ?, ?, ?, 0, 0, 0, 0, 'developing', ?, ?, ?)
+    """, (player['id'], division_id, category_key, name, avg_material_score, strategy, current_week, json.dumps(parts_config)))
     
     flash(f"新製品 {name} の開発を開始しました。", "success")
     return redirect(url_for('dev'))
+
+@app.route('/next_week', methods=['POST'])
+def next_week():
+    new_week = sim.proceed_week()
+    flash(f"第{new_week}週に進みました。", "info")
+    return redirect(request.referrer or url_for('dashboard'))
 
 @app.route('/pr')
 def pr():
@@ -628,7 +682,12 @@ def facility():
     player = get_player_company()
     
     # 保有/賃貸中の施設
-    my_facilities = db.fetch_all("SELECT * FROM facilities WHERE company_id = ?", (player['id'],))
+    my_facilities = db.fetch_all("""
+        SELECT f.*, d.name as division_name 
+        FROM facilities f 
+        LEFT JOIN divisions d ON f.division_id = d.id
+        WHERE f.company_id = ?
+    """, (player['id'],))
     
     # 市場の空き物件
     market_facilities = db.fetch_all("SELECT * FROM facilities WHERE company_id IS NULL LIMIT 50")
@@ -638,6 +697,7 @@ def facility():
 @app.route('/facility/contract', methods=['POST'])
 def facility_contract():
     player = get_player_company()
+    division_id = request.form.get('division_id')
     facility_id = request.form.get('facility_id')
     action = request.form.get('action') # 'rent' or 'buy'
     
@@ -645,15 +705,18 @@ def facility_contract():
         # 物件が空いているか確認
         fac = db.fetch_one("SELECT * FROM facilities WHERE id = ? AND company_id IS NULL", (facility_id,))
         if fac:
+            # division_idが空文字ならNone (本社扱い)
+            if not division_id: division_id = None
+
             if action == 'rent':
                 # 契約処理 (賃貸)
-                db.execute_query("UPDATE facilities SET company_id = ?, is_owned = 0 WHERE id = ?", (player['id'], facility_id))
+                db.execute_query("UPDATE facilities SET company_id = ?, division_id = ?, is_owned = 0 WHERE id = ?", (player['id'], division_id, facility_id))
                 flash(f"{fac['name']} (賃料: ¥{fac['rent']:,}/週) を賃貸契約しました。", "success")
             elif action == 'buy':
                 # 購入処理
                 purchase_price = fac['rent'] * gb.FACILITY_PURCHASE_MULTIPLIER
                 if player['funds'] >= purchase_price:
-                    db.execute_query("UPDATE facilities SET company_id = ?, is_owned = 1 WHERE id = ?", (player['id'], facility_id))
+                    db.execute_query("UPDATE facilities SET company_id = ?, division_id = ?, is_owned = 1 WHERE id = ?", (player['id'], division_id, facility_id))
                     db.execute_query("UPDATE companies SET funds = funds - ? WHERE id = ?", (purchase_price, player['id']))
                     db.execute_query("INSERT INTO account_entries (week, company_id, category, amount) VALUES (?, ?, 'facility_purchase', ?)",
                                      (sim.get_current_week(), player['id'], purchase_price))
@@ -757,7 +820,19 @@ def company_detail(company_id):
     current_week = sim.get_current_week()
     stats = db.fetch_one("SELECT * FROM weekly_stats WHERE company_id = ? AND week = ?", (company_id, current_week - 1))
     
-    return render_template('detail_company.html', comp=comp, products=products, emp_count=emp_count, ceo=ceo, stats=stats)
+    # 財務レポート (PL)
+    period = request.args.get('period', 'quarterly')
+    if period not in ['quarterly', 'yearly']:
+        period = 'quarterly'
+    
+    try:
+        target = int(request.args.get('target', 0))
+    except:
+        target = 0
+        
+    report_data = sim.get_financial_report(company_id, current_week, period, target)
+    
+    return render_template('detail_company.html', comp=comp, products=products, emp_count=emp_count, ceo=ceo, stats=stats, industries=gb.INDUSTRIES, report_data=report_data, period=period)
 
 @app.route('/ir')
 def ir():
@@ -802,9 +877,10 @@ def ir():
 @app.route('/product/<int:design_id>')
 def product_detail(design_id):
     product = db.fetch_one("""
-        SELECT p.*, c.name as maker_name, c.id as maker_id 
+        SELECT p.*, c.name as maker_name, c.id as maker_id, d.industry_key
         FROM product_designs p 
         JOIN companies c ON p.company_id = c.id 
+        LEFT JOIN divisions d ON p.division_id = d.id
         WHERE p.id = ?
     """, (design_id,))
     if not product: return "Product not found", 404
@@ -825,7 +901,7 @@ def product_detail(design_id):
         })
         total_cost += conf['cost']
 
-    return render_template('detail_product.html', product=product, parts_details=parts_details, total_cost=total_cost)
+    return render_template('detail_product.html', product=product, parts_details=parts_details, total_cost=total_cost, industries=gb.INDUSTRIES)
 
 @app.route('/npc/<int:npc_id>')
 def npc_detail(npc_id):
@@ -842,7 +918,7 @@ def npc_detail(npc_id):
     caps = sim.calculate_capabilities(player['id'])
     hr_power = caps['hr']
     
-    return render_template('detail_npc.html', npc=npc, hr_power=hr_power)
+    return render_template('detail_npc.html', npc=npc, hr_power=hr_power, industries=gb.INDUSTRIES)
 
 @app.route('/ir/ipo_apply', methods=['POST'])
 def ipo_apply():

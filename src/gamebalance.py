@@ -1,4 +1,4 @@
-# c:\0124newSIm\gamebalance.py
+# c:\0124newSIm\src\gamebalance.py
 # ゲームバランスに関わる定数を一括管理するファイル
 
 # 時間・年齢関連
@@ -20,23 +20,134 @@ INITIAL_FUNDS_RETAIL = 1000000000   # 50億円
 MAKER_UNIT_SALES_PRICE = 2700000   # メーカー -> 小売
 RETAIL_UNIT_SALES_PRICE_BASE = 3000000 # 小売 -> 顧客（基準）
 
-# 自動車業界コスト構造 (1台あたり)
+# 業界コスト構造 (1台あたり)
 INDUSTRIES = {
     "automotive": {
-        "name": "自動車",
-        "parts": [
-            {"key": "engine", "label": "エンジン", "base_cost": 240000},
-            {"key": "drive_parts", "label": "走行パーツ", "base_cost": 240000},
-            {"key": "suspension", "label": "足回り", "base_cost": 180000},
-            {"key": "safety", "label": "安全機器", "base_cost": 72000},
-            {"key": "auxiliary", "label": "補機類", "base_cost": 48000},
-            {"key": "body", "label": "車体", "base_cost": 240000},
-            {"key": "interior", "label": "インテリア", "base_cost": 180000}
-        ]
+        "name": "自動車業界",
+        "categories": {
+            "sedan": {
+                "name": "セダン",
+                "base_demand": 600, # 週次需要
+                "development_duration": 48, # 開発期間(週): 長め
+                "parts": [
+                    {"key": "engine", "label": "エンジン", "base_cost": 240000},
+                    {"key": "drive_parts", "label": "走行パーツ", "base_cost": 240000},
+                    {"key": "suspension", "label": "足回り", "base_cost": 180000},
+                    {"key": "safety", "label": "安全機器", "base_cost": 72000},
+                    {"key": "auxiliary", "label": "補機類", "base_cost": 48000},
+                    {"key": "body", "label": "車体", "base_cost": 240000},
+                    {"key": "interior", "label": "インテリア", "base_cost": 180000}
+                ]
+            },
+            "suv": {
+                "name": "SUV",
+                "base_demand": 1200,
+                "development_duration": 52,
+                "parts": [
+                    {"key": "engine_high_power", "label": "高出力エンジン", "base_cost": 350000},
+                    {"key": "drive_parts_awd", "label": "4WD走行パーツ", "base_cost": 300000},
+                    {"key": "suspension_heavy", "label": "強化足回り", "base_cost": 220000},
+                    {"key": "safety", "label": "安全機器", "base_cost": 80000},
+                    {"key": "auxiliary", "label": "補機類", "base_cost": 55000},
+                    {"key": "body_large", "label": "大型車体", "base_cost": 350000},
+                    {"key": "interior", "label": "インテリア", "base_cost": 200000}
+                ]
+            },
+            "compact": {
+                "name": "コンパクトカー",
+                "base_demand": 1500,
+                "development_duration": 40,
+                "parts": [
+                    {"key": "engine_small", "label": "小型エンジン", "base_cost": 150000},
+                    {"key": "drive_parts", "label": "走行パーツ", "base_cost": 180000},
+                    {"key": "suspension", "label": "足回り", "base_cost": 120000},
+                    {"key": "safety", "label": "安全機器", "base_cost": 60000},
+                    {"key": "auxiliary", "label": "補機類", "base_cost": 40000},
+                    {"key": "body_small", "label": "小型車体", "base_cost": 150000},
+                    {"key": "interior_simple", "label": "簡易インテリア", "base_cost": 100000}
+                ]
+            },
+            "sports": {
+                "name": "スポーツカー",
+                "base_demand": 200,
+                "development_duration": 60,
+                "parts": [
+                    {"key": "engine_sport", "label": "スポーツエンジン", "base_cost": 500000},
+                    {"key": "drive_parts_sport", "label": "スポーツ走行パーツ", "base_cost": 400000},
+                    {"key": "suspension_sport", "label": "スポーツ足回り", "base_cost": 300000},
+                    {"key": "safety", "label": "安全機器", "base_cost": 80000},
+                    {"key": "auxiliary", "label": "補機類", "base_cost": 60000},
+                    {"key": "body_aero", "label": "エアロ車体", "base_cost": 400000},
+                    {"key": "interior_sport", "label": "スポーツインテリア", "base_cost": 250000}
+                ]
+            }
+        }
+    },
+    "home_appliances": { # 新規追加
+        "name": "家電業界",
+        "categories": {
+            # 家電業界全体で自動車の約10倍の需要(10,000台)になるようカテゴリで配分
+            "washing_machine": {
+                "name": "洗濯機",
+                "base_demand": 3000,
+                "development_duration": 13, # 要件: 3ヶ月 (13週)
+                "parts": [
+                    {"key": "motor", "label": "モーター", "base_cost": 5000},
+                    {"key": "casing", "label": "外装", "base_cost": 3000},
+                    {"key": "control_panel", "label": "操作パネル", "base_cost": 2000}
+                ]
+            },
+            "refrigerator": {
+                "name": "冷蔵庫",
+                "base_demand": 4000,
+                "development_duration": 16,
+                "parts": [
+                    {"key": "compressor", "label": "コンプレッサー", "base_cost": 8000},
+                    {"key": "casing_large", "label": "大型外装", "base_cost": 6000},
+                    {"key": "insulation", "label": "断熱材", "base_cost": 3000},
+                    {"key": "control_panel", "label": "操作パネル", "base_cost": 2000}
+                ]
+            },
+            "tv": {
+                "name": "テレビ",
+                "base_demand": 5000,
+                "development_duration": 12,
+                "parts": [
+                    {"key": "display_panel", "label": "液晶パネル", "base_cost": 15000},
+                    {"key": "circuit_board", "label": "基板", "base_cost": 5000},
+                    {"key": "casing_thin", "label": "薄型外装", "base_cost": 2000},
+                    {"key": "speakers", "label": "スピーカー", "base_cost": 1000}
+                ]
+            },
+            "ac": {
+                "name": "エアコン",
+                "base_demand": 2500,
+                "development_duration": 14,
+                "parts": [
+                    {"key": "compressor", "label": "コンプレッサー", "base_cost": 7000},
+                    {"key": "heat_exchanger", "label": "熱交換器", "base_cost": 4000},
+                    {"key": "fan", "label": "ファン", "base_cost": 1000},
+                    {"key": "casing", "label": "外装", "base_cost": 2000}
+                ]
+            },
+            "microwave": {
+                "name": "電子レンジ",
+                "base_demand": 3500,
+                "development_duration": 10,
+                "parts": [
+                    {"key": "magnetron", "label": "マグネトロン", "base_cost": 3000},
+                    {"key": "casing", "label": "外装", "base_cost": 2000},
+                    {"key": "control_panel", "label": "操作パネル", "base_cost": 1500},
+                    {"key": "turntable", "label": "ターンテーブル", "base_cost": 500}
+                ]
+            }
+        }
     }
 }
-CURRENT_INDUSTRY = "automotive"
-TOTAL_MATERIAL_COST = sum(p['base_cost'] for p in INDUSTRIES[CURRENT_INDUSTRY]['parts'])
+
+# デフォルト設定（後方互換用）
+DEFAULT_INDUSTRY = "automotive"
+DEFAULT_CATEGORY = "sedan"
 
 # 施設・賃料 (週次)
 RENT_OFFICE = 20000  # 1人あたり
@@ -90,7 +201,6 @@ MGMT_BONUS_MANAGER = 0.1
 MGMT_BONUS_CXO = 0.25
 
 # 開発関連
-DEVELOPMENT_DURATION = 26 # 開発にかかる週数 (半年)
 DEV_KNOWHOW_GAIN = 0.5 # 開発完了時に得られるノウハウ
 DEV_KNOWHOW_EFFECT = 0.05 # ノウハウ1ポイントあたりのコンセプトスコアへのボーナス
 CONCEPT_DECAY_RATE = 0.999 # 週次のコンセプト陳腐化率 (1 - 0.001)
