@@ -94,6 +94,9 @@ DEVELOPMENT_DURATION = 26 # 開発にかかる週数 (半年)
 DEV_KNOWHOW_GAIN = 0.5 # 開発完了時に得られるノウハウ
 DEV_KNOWHOW_EFFECT = 0.05 # ノウハウ1ポイントあたりのコンセプトスコアへのボーナス
 CONCEPT_DECAY_RATE = 0.999 # 週次のコンセプト陳腐化率 (1 - 0.001)
+# 追加: 開発キャパシティ要件
+# プロジェクト1つにつきキャパ2000が必要 (能力50のNPC 5人分)
+REQ_CAPACITY_DEV_PROJECT = 2000
 
 # 開発方針
 DEV_STRATEGY_CONCEPT_SPECIALIZED = "concept_specialized"
@@ -123,6 +126,9 @@ AD_EFFECT_BASE = 1.0 # 1単位あたりの上昇ベース値
 BRAND_DECAY_BASE = 0.90 # ブランド力の基本減衰率 (広報0の場合、毎週10%減)
 AWARENESS_DECAY_BASE = 0.85 # 商品認知度の基本減衰率 (広報0の場合、毎週15%減)
 PR_MITIGATION_FACTOR = 0.001 # 広報力1につき減衰率を0.1%緩和
+# 追加: 広報キャパシティ要件
+# ブランド力+認知度合計 1ポイントにつきキャパ2.0が必要 (合計1000ポイントならキャパ2000=5人分必要)
+REQ_CAPACITY_PR_POINT = 2.0
 
 # 価格戦略
 PRICE_ADJUST_RATE = 0.05 # 価格改定幅 (5%)
@@ -135,8 +141,22 @@ PER_BASE = 15.0
 PBR_BASE = 1.0
 STOCK_VOLATILITY = 0.03 # 週次変動幅 (3%)
 
+# IPO (新規上場)
+IPO_MIN_NET_ASSETS = 1000000000 # 純資産10億円
+IPO_MIN_PROFIT_WEEKS = 4 # 黒字継続週数 (直近4週累計)
+IPO_MIN_CREDIT_RATING = 70 # 格付け70以上
+IPO_NEW_SHARE_RATIO = 0.2 # 公募増資比率 (発行済の20%)
+IPO_DISCOUNT_RATE = 0.9 # 公募価格ディスカウント (理論価格の90%)
+IPO_FEE_RATE = 0.05 # 上場手数料 (調達額の5%)
+
 # 経理・決算
 ACCOUNTING_LOAD_PER_TRANSACTION = 0.05 # 取引1件あたりの経理負荷
 ACCOUNTING_LOAD_PER_EMPLOYEE = 0.5 # 従業員1人あたりの経理負荷
 QUARTER_WEEKS = 13 # 四半期の長さ
 REPORT_PUBLISH_DELAY_PENALTY = 0.1 # 決算遅延時の株価下落率
+
+# 追加: 営業キャパシティ要件
+# 取引1件につきキャパ20が必要 (能力50のNPC 1人で週20件さばける)
+REQ_CAPACITY_SALES_TRANSACTION = 20
+# 在庫1台につきキャパ0.1が必要 (在庫管理・棚卸負荷)
+REQ_CAPACITY_SALES_STOCK = 0.1

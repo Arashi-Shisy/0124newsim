@@ -3,6 +3,33 @@
 
 {% block content %}
 <div class="dashboard-grid">
+    <!-- 営業キャパシティ状況 -->
+    <div class="card card-large">
+        <div class="card-header">
+            <h2>営業キャパシティ状況</h2>
+        </div>
+        <div class="card-body">
+            <div class="stat-row">
+                <span class="label">現在の営業キャパシティ</span>
+                <span class="value">{{ header_caps.sales_capacity|int }}</span>
+            </div>
+            <div class="stat-row">
+                <span class="label">現在の要求値 (負荷)</span>
+                <span class="value">{{ header_caps.requirements.sales|int }}</span>
+            </div>
+            <div class="bar-container" style="width: 100%; height: 24px; margin-top: 10px;">
+                {% set usage_percent = (header_caps.requirements.sales / header_caps.sales_capacity * 100)|int if header_caps.sales_capacity > 0 else 0 %}
+                <div class="bar-fill" style="width: {{ [usage_percent, 100]|min }}%; background-color: {{ '#e94560' if usage_percent > 100 else '#4db8ff' }};"></div>
+                <span class="bar-text" style="right: auto; left: 10px;">負荷率 {{ usage_percent }}%</span>
+            </div>
+            {% if header_caps.requirements.sales > header_caps.sales_capacity %}
+            <div class="alert-box" style="margin-top: 15px;">
+                <p class="alert-text">⚠ キャパシティ不足！営業能力が低下しています。</p>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+
     <!-- 自社在庫サマリ -->
     <div class="card card-large">
         <div class="card-header">
@@ -73,6 +100,39 @@
                     </tr>
                     {% else %}
                     <tr><td colspan="5">現在、新しい注文はありません。</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- 受注済みリスト -->
+    <div class="card card-large">
+        <div class="card-header">
+            <h2>納品待ち (Accepted Orders)</h2>
+        </div>
+        <div class="card-body">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>発注元</th>
+                        <th>製品</th>
+                        <th>数量</th>
+                        <th>金額</th>
+                        <th>ステータス</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for order in accepted_orders %}
+                    <tr>
+                        <td><a href="{{ url_for('company_detail', company_id=order.buyer_id) }}" style="color: #4db8ff;">{{ order.buyer_name }}</a></td>
+                        <td><a href="{{ url_for('product_detail', design_id=order.design_id) }}" style="color: #4db8ff;">{{ order.product_name }}</a></td>
+                        <td>{{ order.quantity }}</td>
+                        <td>¥{{ "{:,}".format(order.amount) }}</td>
+                        <td><span style="color: #4caf50;">次週納品予定</span></td>
+                    </tr>
+                    {% else %}
+                    <tr><td colspan="5">納品待ちの注文はありません。</td></tr>
                     {% endfor %}
                 </tbody>
             </table>

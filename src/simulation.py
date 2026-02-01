@@ -42,6 +42,10 @@ class Simulation:
             'hr_capacity': 0, 'pr_capacity': 0, 'accounting_capacity': 0, 'store_ops_capacity': 0,
             'store_throughput': 0
         }
+        # 要求値と充足率の記録用
+        caps['requirements'] = {
+            'development': 0, 'sales': 0, 'pr': 0, 'hr': 0, 'accounting': 0
+        }
 
         # 施設キャパシティの取得
         facilities = db.fetch_all("SELECT type, size FROM facilities WHERE company_id = ?", (company_id,))
@@ -169,6 +173,74 @@ class Simulation:
             for key in caps:
                 if key != 'stability' and isinstance(caps[key], (int, float)): # 安定性自体は下げない。辞書型(facilities)も除外
                     caps[key] *= penalty_factor
+
+        # --- 仕事量とキャパシティ不足によるペナルティ計算 ---
+        # 1. 開発部 (Development)
+        # 仕事量: 開発中のプロジェクト数
+        dev_projects = db.fetch_one("SELECT COUNT(*) as cnt FROM product_designs WHERE company_id = ? AND status = 'developing'", (company_id,))
+        dev_count = dev_projects['cnt'] if dev_projects else 0
+        req_dev = dev_count * gb.REQ_CAPACITY_DEV_PROJECT
+        caps['requirements']['development'] = req_dev
+        
+        if req_dev > 0:
+            # 充足率 (最大1.0)
+            sufficiency = min(1.0, caps['development_capacity'] / req_dev)
+            # ペナルティ: 能力値(平均)が低下する (質の低下)
+            caps['development'] *= sufficiency
+
+        # 2. 営業部 (Sales)
+        # 仕事量: 前週のB2B取引数 + 現在庫数
+        # 前週の統計がない場合は0扱い
+        current_week = self.get_current_week()
+        prev_stats = db.fetch_one("SELECT b2b_sales, b2c_sales, inventory_count FROM weekly_stats WHERE company_id = ? AND week = ?", (company_id, current_week - 1))
+        
+        tx_count = prev_stats['b2b_sales'] if prev_stats else 0
+        stock_count = prev_stats['inventory_count'] if prev_stats else 0
+        
+        req_sales = (tx_count * gb.REQ_CAPACITY_SALES_TRANSACTION) + (stock_count * gb.REQ_CAPACITY_SALES_STOCK)
+        caps['requirements']['sales'] = req_sales
+        
+        if req_sales > 0:
+            sufficiency = min(1.0, caps['sales_capacity'] / req_sales)
+            # ペナルティ: 営業能力低下 -> 卸値ダウン、仕入れ目利き低下
+            caps['sales'] *= sufficiency
+
+        # 3. 広報部 (PR)
+        # 仕事量: ブランド力 + 全商品認知度
+        comp_info = db.fetch_one("SELECT brand_power FROM companies WHERE id = ?", (company_id,))
+        brand = comp_info['brand_power'] if comp_info else 0
+        
+        awareness_res = db.fetch_one("SELECT SUM(awareness) as total FROM product_designs WHERE company_id = ?", (company_id,))
+        awareness = awareness_res['total'] if awareness_res and awareness_res['total'] else 0
+        
+        req_pr = (brand + awareness) * gb.REQ_CAPACITY_PR_POINT
+        caps['requirements']['pr'] = req_pr
+        
+        if req_pr > 0:
+            sufficiency = min(1.0, caps['pr_capacity'] / req_pr)
+            # ペナルティ: 広報能力低下 -> 広告効果ダウン
+            caps['pr'] *= sufficiency
+            # 追加ペナルティ: 減衰率悪化は process_advertising で処理するために充足率を保存したいが、
+            # ここでは能力値を下げることで間接的に影響させる。
+            # さらに process_advertising でキャパシティを再確認して減衰を加速させる。
+
+        # 4. 人事部 (HR)
+        # 仕事量: 全従業員数 (NPC数 * SCALE)
+        # process_hr のロジック: required = 50 * (scaled_count / 7.0)
+        total_employees = len(employees)
+        total_employees_scaled = total_employees * gb.NPC_SCALE_FACTOR
+        req_hr = 50 * (total_employees_scaled / 7.0)
+        caps['requirements']['hr'] = int(req_hr)
+        # HRのペナルティは process_hr で忠誠度低下として適用されるため、ここでは能力値を下げない
+
+        # 5. 経理部 (Accounting)
+        # 仕事量: 取引数 + 従業員数
+        # process_stock_market のロジック参照
+        # 取引数は前週の実績を使用 (B2B + B2C)
+        b2c_count = prev_stats['b2c_sales'] if prev_stats else 0
+        total_tx = tx_count + b2c_count
+        req_acc = (total_tx * gb.ACCOUNTING_LOAD_PER_TRANSACTION) + (total_employees * gb.ACCOUNTING_LOAD_PER_EMPLOYEE)
+        caps['requirements']['accounting'] = int(req_acc)
 
         # 販売キャパシティ計算 (店舗スタッフ数 * 効率 * 能力補正)
         # process_b2cでの再クエリを避けるためここで計算 (名称をstore_throughputに変更)
@@ -330,6 +402,7 @@ class Simulation:
             logic.decide_development(current_week, designs=company_designs)
             logic.decide_facilities(current_week)
             logic.decide_advertising(current_week)
+            logic.decide_stock_action(current_week)
             logic.decide_pricing(
                 current_week,
                 designs=all_designs_res,
@@ -991,12 +1064,28 @@ class Simulation:
                 if all_caps and cid in all_caps:
                     pr_power = all_caps[cid].get('pr', 0)
                 
+                # キャパシティ不足チェック
+                # calculate_capabilities で計算済みの値を使いたいが、all_capsには能力値しか入っていない場合があるため再計算はコストが高い。
+                # 簡易的にここで再取得するか、all_capsの構造に依存する。
+                # all_caps は calculate_capabilities の戻り値そのものなので、requirements も入っているはず。
+                caps_data = all_caps.get(cid, {})
+                pr_cap = caps_data.get('pr_capacity', 0)
+                req_pr = caps_data.get('requirements', {}).get('pr', 0)
+                
+                sufficiency = 1.0
+                if req_pr > 0:
+                    sufficiency = min(1.0, pr_cap / req_pr)
+
                 # 減衰率の計算: 基本値 + (能力による緩和)
-                # PR 0: 0.90 (10%減)
-                # PR 50: 0.90 + 0.05 = 0.95 (5%減)
-                # PR 100: 0.90 + 0.10 = 1.00 (減衰なし)
+                # キャパシティ不足の場合、緩和効果が消えるだけでなく、基本減衰率自体が悪化するペナルティ
+                penalty_decay = 0.05 * (1.0 - sufficiency) # 最大5%追加減衰
+                
                 brand_decay = min(1.0, gb.BRAND_DECAY_BASE + (pr_power * gb.PR_MITIGATION_FACTOR))
                 awareness_decay = min(1.0, gb.AWARENESS_DECAY_BASE + (pr_power * gb.PR_MITIGATION_FACTOR))
+                
+                # ペナルティ適用
+                brand_decay -= penalty_decay
+                awareness_decay -= penalty_decay
                 
                 cursor.execute("UPDATE companies SET brand_power = brand_power * ? WHERE id = ?", (brand_decay, cid))
                 cursor.execute("UPDATE product_designs SET awareness = awareness * ? WHERE company_id = ?", (awareness_decay, cid))
@@ -1009,12 +1098,41 @@ class Simulation:
         
         for proj in developing_projects:
             start_week = proj['developed_week']
-            if week - start_week >= gb.DEVELOPMENT_DURATION:
+            company_id = proj['company_id']
+            
+            # 開発キャパシティチェック
+            # 毎回計算するのは重いが、週次処理なので許容
+            caps = self.calculate_capabilities(company_id)
+            dev_cap = caps['development_capacity']
+            req_dev = caps['requirements']['development'] # calculate_capabilities内で計算済み
+            
+            # 充足率
+            sufficiency = 1.0
+            if req_dev > 0:
+                sufficiency = min(1.0, dev_cap / req_dev)
+            
+            # キャパシティ不足の場合、開始週を後ろ倒しにして期間を延長する
+            # 充足率 0.5 なら、1週間進むところを 0.5週間しか進まない -> start_week を 0.5 増やす
+            # 整数管理のため、確率的に +1 する
+            delay_prob = 1.0 - sufficiency
+            if random.random() < delay_prob:
+                # 遅延発生
+                db.execute_query("UPDATE product_designs SET developed_week = developed_week + 1 WHERE id = ?", (proj['id'],))
+                # ログは出しすぎるとうるさいので、著しい遅延の場合のみ出すなどの調整が必要だが今回は割愛
+            
+            # 完了判定 (現在週 - 開始週 >= 期間)
+            # 遅延により start_week が増えているため、完了が遅れる
+            current_start_week = start_week # DB更新前または更新後の値を取得すべきだが、ここでは簡易的に判定
+            # 正確には再取得が必要
+            updated_proj = db.fetch_one("SELECT developed_week FROM product_designs WHERE id = ?", (proj['id'],))
+            if updated_proj:
+                current_start_week = updated_proj['developed_week']
+
+            if week - current_start_week >= gb.DEVELOPMENT_DURATION:
                 # 開発完了処理
-                company_id = proj['company_id']
                 
                 # 企業の開発力を計算
-                caps = self.calculate_capabilities(company_id)
+                # caps は上で計算済み
                 company_data = db.fetch_one("SELECT dev_knowhow FROM companies WHERE id = ?", (company_id,))
                 total_dev_power = caps['development']
                 if total_dev_power == 0: total_dev_power = 20 # 最低保証
@@ -1162,6 +1280,64 @@ class Simulation:
                             db.execute_query("UPDATE npcs SET company_id = ?, role = ?, department = ? WHERE id = ?", 
                                              (new_id, gb.ROLE_CEO, gb.DEPT_HR, candidate['id'])) # CEOは一旦HR所属扱いにしておく
 
+    def check_ipo_eligibility(self, company_id):
+        """IPO条件を満たしているかチェック"""
+        company = db.fetch_one("SELECT * FROM companies WHERE id = ?", (company_id,))
+        if not company: return False, ["企業が存在しません"]
+        
+        reasons = []
+        is_eligible = True
+        
+        # 1. 純資産チェック (簡易: 資金 + 在庫評価 + 施設評価 - 負債)
+        funds = company['funds']
+        # 在庫評価 (原価ベースが望ましいが、簡易的にsales_price * 0.5程度で評価)
+        inv_val = db.fetch_one("""
+            SELECT SUM(i.quantity * d.sales_price * 0.5) as val 
+            FROM inventory i JOIN product_designs d ON i.design_id = d.id 
+            WHERE i.company_id = ?
+        """, (company_id,))['val'] or 0
+        # 施設 (購入価格ベース)
+        fac_val = db.fetch_one("""
+            SELECT SUM(rent * 100) as val FROM facilities 
+            WHERE company_id = ? AND is_owned = 1
+        """, (company_id,))['val'] or 0
+        
+        total_assets = funds + inv_val + fac_val
+        
+        # 負債
+        debt = db.fetch_one("SELECT SUM(amount) as val FROM loans WHERE company_id = ?", (company_id,))['val'] or 0
+        
+        net_assets = total_assets - debt
+        
+        if net_assets < gb.IPO_MIN_NET_ASSETS:
+            is_eligible = False
+            reasons.append(f"純資産不足 (現在: {net_assets/100000000:.1f}億円 / 必要: {gb.IPO_MIN_NET_ASSETS/100000000:.1f}億円)")
+            
+        # 2. 黒字要件 (直近4週間の純利益合計 > 0)
+        current_week = self.get_current_week()
+        profit_res = db.fetch_one("""
+            SELECT SUM(CASE WHEN category = 'revenue' THEN amount ELSE 0 END) - 
+                   SUM(CASE WHEN category NOT IN ('revenue', 'material', 'stock_purchase', 'facility_purchase', 'facility_sell', 'equity_finance') THEN amount ELSE 0 END) as profit
+            FROM account_entries WHERE company_id = ? AND week >= ?
+        """, (company_id, current_week - gb.IPO_MIN_PROFIT_WEEKS))
+        recent_profit = profit_res['profit'] or 0
+        
+        if recent_profit <= 0:
+            is_eligible = False
+            reasons.append("直近4週間の累積赤字")
+            
+        # 3. 格付け要件
+        if company['credit_rating'] < gb.IPO_MIN_CREDIT_RATING:
+            is_eligible = False
+            reasons.append(f"信用格付け不足 (現在: {company['credit_rating']} / 必要: {gb.IPO_MIN_CREDIT_RATING})")
+            
+        # 4. 既に上場していないか
+        if company['listing_status'] != 'private' and company['listing_status'] != 'applying':
+            is_eligible = False
+            reasons.append("既に上場済み")
+
+        return is_eligible, reasons
+
     def process_stock_market(self, week, all_caps):
         """
         株式市場の処理: 株価更新、決算発表、経理キャパシティ判定
@@ -1173,6 +1349,9 @@ class Simulation:
             
             for comp in companies:
                 cid = comp['id']
+                
+                # Rowオブジェクトをdictに変換して変更可能にする
+                comp_dict = dict(comp)
                 
                 # --- 1. 決算処理 (Accounting) ---
                 # 四半期ごとの締め処理
@@ -1262,6 +1441,11 @@ class Simulation:
                             cursor.execute("UPDATE financial_reports SET status = ?, published_week = ? WHERE id = ?", 
                                            (status, week, draft_report['id']))
                 
+                # --- 2.5 株価計算用パラメータの準備 ---
+                # IPO時の公募価格計算でも使うため、ここで計算しておく
+                
+                shares = comp_dict['outstanding_shares']
+                
                 # --- 3. 株価計算 (Valuation) ---
                 # 理論株価 = (EPS * PER + BPS * PBR) / 2
                 
@@ -1274,32 +1458,123 @@ class Simulation:
                 recent_profit = cursor.fetchone()['profit'] or 0
                 annual_profit_forecast = recent_profit * 13
                 
-                shares = comp['outstanding_shares']
                 eps = annual_profit_forecast / shares
                 
-                # BPS: 純資産 / 株式数
-                # 簡易計算: 資金 + (在庫 * 0.5) + (施設 * 0.8) - 負債
-                # ここでは comp['funds'] をベースに簡易化
-                bps = max(1, comp['funds'] / shares)
+                # BPS: 純資産 / 株式数 (より正確な資産評価)
+                funds = comp_dict['funds']
+                
+                # 在庫評価 (販売価格の50%で評価)
+                cursor.execute("""
+                    SELECT SUM(i.quantity * d.sales_price * 0.5) as val 
+                    FROM inventory i JOIN product_designs d ON i.design_id = d.id 
+                    WHERE i.company_id = ?
+                """, (cid,))
+                inv_res = cursor.fetchone()
+                inv_val = inv_res['val'] if inv_res and inv_res['val'] else 0
+                
+                # 施設評価 (所有物件の購入価格相当)
+                cursor.execute("""
+                    SELECT SUM(rent * 100) as val FROM facilities 
+                    WHERE company_id = ? AND is_owned = 1
+                """, (cid,))
+                fac_res = cursor.fetchone()
+                fac_val = fac_res['val'] if fac_res and fac_res['val'] else 0
+                
+                # 負債
+                cursor.execute("SELECT SUM(amount) as total FROM loans WHERE company_id = ?", (cid,))
+                debt_res = cursor.fetchone()
+                debt = debt_res['total'] if debt_res and debt_res['total'] else 0
+                
+                net_assets = funds + inv_val + fac_val - debt
+                bps = max(1, net_assets / shares)
                 
                 # PER, PBR基準
                 target_per = gb.PER_BASE
-                target_pbr = gb.PBR_BASE + (comp['brand_power'] / 100.0) # ブランドプレミアム
+                target_pbr = gb.PBR_BASE + (comp_dict['brand_power'] / 100.0) # ブランドプレミアム
                 
                 # 理論株価
-                theoretical_price = ((eps * target_per) + (bps * target_pbr)) / 2.0
+                if eps > 0:
+                    # 黒字: 収益価値と資産価値の併用
+                    theoretical_price = ((eps * target_per) + (bps * target_pbr)) / 2.0
+                else:
+                    # 赤字: 資産価値(PBR)のみで評価 (赤字で株価がマイナスになるのを防ぐ)
+                    theoretical_price = bps * target_pbr
+                
                 theoretical_price = max(1, theoretical_price) # 1円以上
                 
+                # --- IPO処理 (審査・上場) ---
+                if comp_dict['listing_status'] == 'applying':
+                    is_ok, reasons = self.check_ipo_eligibility(cid)
+                    if is_ok:
+                        # 上場承認 & 公募増資
+                        offering_price = int(theoretical_price * gb.IPO_DISCOUNT_RATE)
+                        new_shares = int(shares * gb.IPO_NEW_SHARE_RATIO)
+                        raised_funds = offering_price * new_shares
+                        fees = int(raised_funds * gb.IPO_FEE_RATE)
+                        net_proceeds = raised_funds - fees
+                        
+                        # DB更新
+                        cursor.execute("""
+                            UPDATE companies 
+                            SET listing_status = 'public', funds = funds + ?, outstanding_shares = outstanding_shares + ?, stock_price = ? 
+                            WHERE id = ?
+                        """, (net_proceeds, new_shares, offering_price, cid))
+                        
+                        # 資金調達ログ (PL外)
+                        cursor.execute("INSERT INTO account_entries (week, company_id, category, amount) VALUES (?, ?, 'equity_finance', ?)",
+                                       (week, cid, net_proceeds))
+                        
+                        self.log_news(week, cid, f"祝！新規上場(IPO)を果たしました！ 公募価格: {offering_price:,}円, 調達額: {net_proceeds:,}円", 'info')
+                        
+                        # ブランド力ボーナス
+                        cursor.execute("UPDATE companies SET brand_power = brand_power + 20 WHERE id = ?", (cid,))
+                        
+                        # メモリ上の値を更新して、後続の履歴保存に反映させる
+                        comp_dict['listing_status'] = 'public'
+                        comp_dict['outstanding_shares'] += new_shares
+                        comp_dict['stock_price'] = offering_price
+                        # fundsは株価計算に使わないので更新省略
+                        
+                        # 初値がついたので、この週の株価計算はスキップ（公募価格＝終値とする）
+                        # ただし履歴には残したいので後続へ進む
+                    else:
+                        # 審査落ち
+                        cursor.execute("UPDATE companies SET listing_status = 'private' WHERE id = ?", (cid,))
+                        self.log_news(week, cid, f"IPO審査に落ちました。理由: {', '.join(reasons)}", 'error')
+
                 # 現在株価からの遷移
-                current_price = comp['stock_price']
-                alpha = 0.2 # 織り込み係数
+                current_price = comp_dict['stock_price']
+                alpha = 0.1 # 織り込み係数 (急激な変動を抑えるため0.2->0.1へ変更)
                 
                 # 変動
                 volatility = random.uniform(1.0 - gb.STOCK_VOLATILITY, 1.0 + gb.STOCK_VOLATILITY)
                 
-                new_price = int(((theoretical_price * alpha) + (current_price * (1 - alpha))) * volatility * accounting_penalty)
+                proposed_price = int(((theoretical_price * alpha) + (current_price * (1 - alpha))) * volatility * accounting_penalty)
+                
+                # ストップ高・ストップ安 (週次変動制限 ±20%)
+                max_price = int(current_price * 1.2)
+                min_price = int(current_price * 0.8)
+                
+                new_price = max(min_price, min(max_price, proposed_price))
                 new_price = max(1, new_price)
                 
+                # --- 株式分割 (Stock Split) ---
+                # 株価が10万円を超えた場合、5000円を目安に分割する
+                # IPO等で株式数が変動している可能性があるため、最新の値を参照
+                shares = comp_dict['outstanding_shares']
+                
+                if new_price > 100000:
+                    split_ratio = int(new_price / 5000)
+                    if split_ratio >= 2:
+                        new_shares = shares * split_ratio
+                        new_price = int(new_price / split_ratio)
+                        
+                        cursor.execute("UPDATE companies SET outstanding_shares = ? WHERE id = ?", (new_shares, cid))
+                        self.log_news(week, cid, f"株式分割を実施しました (1:{split_ratio})。株価は {new_price:,}円 に調整されました。", 'market')
+                        
+                        shares = new_shares
+                        comp_dict['outstanding_shares'] = shares
+
                 market_cap = new_price * shares
                 
                 # 更新

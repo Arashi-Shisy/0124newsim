@@ -204,9 +204,6 @@ def hr():
     # 従業員一覧
     employees = db.fetch_all("SELECT * FROM npcs WHERE company_id = ?", (player['id'],))
     
-    # 候補者一覧（労働市場）
-    candidates = db.fetch_all("SELECT * FROM npcs WHERE company_id IS NULL")
-    
     # 部署リスト
     departments = gb.DEPARTMENTS
 
@@ -216,6 +213,18 @@ def hr():
         count = len([e for e in employees if e['department'] == d])
         space = count * gb.NPC_SCALE_FACTOR
         dept_stats[d] = {'count': count, 'space': space}
+    
+    return render_template('hr.html', employees=employees, departments=departments, caps=caps, hr_power=caps['hr'], npc_scale=gb.NPC_SCALE_FACTOR, dept_stats=dept_stats)
+
+@app.route('/hire')
+def hire_page():
+    player = get_player_company()
+    
+    # 人事能力の取得（表示誤差計算用）
+    caps = sim.calculate_capabilities(player['id'])
+    
+    # 候補者一覧（労働市場）
+    candidates = db.fetch_all("SELECT * FROM npcs WHERE company_id IS NULL")
     
     # 交渉中（オファー済み）の候補者取得
     offers = db.fetch_all("""
@@ -227,8 +236,9 @@ def hr():
     """, (player['id'],))
 
     offered_npc_ids = [o['npc_id'] for o in offers]
+    departments = gb.DEPARTMENTS
     
-    return render_template('hr.html', employees=employees, candidates=candidates, departments=departments, caps=caps, hr_power=caps['hr'], npc_scale=gb.NPC_SCALE_FACTOR, dept_stats=dept_stats, offers=offers, offered_npc_ids=offered_npc_ids)
+    return render_template('hire.html', candidates=candidates, offers=offers, offered_npc_ids=offered_npc_ids, departments=departments, hr_power=caps['hr'])
 
 @app.route('/hr/change_dept', methods=['POST'])
 def hr_change_dept():
@@ -302,7 +312,7 @@ def hr_hire():
         """, (current_week, player['id'], npc_id, offer_salary, target_dept))
         flash("採用オファーを出しました。来週結果がわかります。", "info")
         
-    return redirect(url_for('hr', tab='candidates'))
+    return redirect(url_for('hire_page'))
 
 @app.route('/hr/hire_bulk', methods=['POST'])
 def hr_hire_bulk():
@@ -456,6 +466,15 @@ def sales():
         WHERE o.seller_id = ? AND o.status = 'pending'
     """, (player['id'],))
     
+    # 受注済み(未納品)の注文 (B2B)
+    accepted_orders = db.fetch_all("""
+        SELECT o.*, c.name as buyer_name, d.name as product_name 
+        FROM b2b_orders o 
+        JOIN companies c ON o.buyer_id = c.id 
+        JOIN product_designs d ON o.design_id = d.id
+        WHERE o.seller_id = ? AND o.status = 'accepted'
+    """, (player['id'],))
+    
     # 取引履歴
     history = db.fetch_all("""
         SELECT t.*, c.name as partner_name, d.name as product_name
@@ -484,7 +503,7 @@ def sales():
     """, (player['id'],))
     total_inventory = sum(i['quantity'] for i in my_inventory)
 
-    return render_template('sales.html', pending_orders=pending_orders, history=history, market_stocks=market_stocks, my_inventory=my_inventory, total_inventory=total_inventory)
+    return render_template('sales.html', pending_orders=pending_orders, accepted_orders=accepted_orders, history=history, market_stocks=market_stocks, my_inventory=my_inventory, total_inventory=total_inventory)
 
 @app.route('/sales/action', methods=['POST'])
 def sales_action():
@@ -559,7 +578,8 @@ def dev():
     
     return render_template('dev.html', developing=developing, completed=completed, 
                            parts_data=parts_data, suppliers=suppliers, strategies=strategies,
-                           current_week=current_week, duration=gb.DEVELOPMENT_DURATION)
+                           current_week=current_week, duration=gb.DEVELOPMENT_DURATION,
+                           req_per_project=gb.REQ_CAPACITY_DEV_PROJECT)
 
 @app.route('/dev/start', methods=['POST'])
 def dev_start():
@@ -890,12 +910,26 @@ def ir():
         {'name': '創業者 (あなた)', 'shares': player['outstanding_shares'], 'ratio': 100.0}
     ]
     
+    # IPO要件チェック
+    ipo_check = None
+    if player['listing_status'] == 'private':
+        is_eligible, reasons = sim.check_ipo_eligibility(player['id'])
+        ipo_check = {
+            'is_eligible': is_eligible,
+            'reasons': reasons,
+            'min_assets': gb.IPO_MIN_NET_ASSETS,
+            'min_rating': gb.IPO_MIN_CREDIT_RATING,
+            'min_profit_weeks': gb.IPO_MIN_PROFIT_WEEKS
+        }
+    
     return render_template('ir.html', 
                            player=player, 
                            history=history, 
                            latest=latest, 
                            reports=reports, 
-                           shareholders=shareholders)
+                           shareholders=shareholders,
+                           ipo_check=ipo_check,
+                           listing_status=player['listing_status'])
 
 @app.route('/product/<int:design_id>')
 def product_detail(design_id):
@@ -941,6 +975,19 @@ def npc_detail(npc_id):
     hr_power = caps['hr']
     
     return render_template('detail_npc.html', npc=npc, hr_power=hr_power)
+
+@app.route('/ir/ipo_apply', methods=['POST'])
+def ipo_apply():
+    player = get_player_company()
+    is_eligible, reasons = sim.check_ipo_eligibility(player['id'])
+    
+    if is_eligible:
+        db.execute_query("UPDATE companies SET listing_status = 'applying' WHERE id = ?", (player['id'],))
+        flash("IPO申請を行いました。次週、審査結果が発表されます。", "success")
+    else:
+        flash(f"IPO要件を満たしていません: {', '.join(reasons)}", "error")
+        
+    return redirect(url_for('ir'))
 
 if __name__ == '__main__':
     # データベースがない場合は初期化

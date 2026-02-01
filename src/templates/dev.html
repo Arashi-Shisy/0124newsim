@@ -9,6 +9,23 @@
             <h2>新規プロジェクト開始</h2>
         </div>
         <div class="card-body">
+            <!-- キャパシティ予測アラート -->
+            <div class="alert-box" style="margin-bottom: 20px; background-color: rgba(15, 52, 96, 0.6); border: 1px solid #4db8ff;">
+                <h4 style="margin-top: 0; margin-bottom: 10px; color: #4db8ff; font-size: 1em;">開発キャパシティ予測</h4>
+                <div style="display: flex; justify-content: space-between; font-size: 0.9em;">
+                    <div>
+                        <div>現在のキャパシティ: <strong>{{ header_caps.development_capacity|int }}</strong></div>
+                        <div>現在の要求値: <strong>{{ header_caps.requirements.development|int }}</strong></div>
+                    </div>
+                    <div style="text-align: right;">
+                        <div>新規プロジェクト要求: <strong>+{{ req_per_project }}</strong></div>
+                        <div>開始後の要求値: <strong style="color: {{ '#e94560' if (header_caps.requirements.development + req_per_project) > header_caps.development_capacity else '#b2ff59' }};">
+                            {{ (header_caps.requirements.development + req_per_project)|int }}
+                        </strong></div>
+                    </div>
+                </div>
+            </div>
+
             <form action="{{ url_for('dev_start') }}" method="post">
                 <div class="form-group">
                     <label>プロジェクト名</label>

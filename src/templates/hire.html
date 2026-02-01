@@ -1,0 +1,216 @@
+<!-- c:\0124newSIm\src\templates\hire.html -->
+{% extends "base.html" %}
+
+{% block content %}
+<div class="card" style="margin-bottom: 20px;">
+    <div class="card-header">
+        <h2>新規採用 (労働市場)</h2>
+    </div>
+    <div class="card-body">
+        <div class="action-bar" style="margin-bottom: 10px;">
+            <a href="{{ url_for('hr') }}" class="btn btn-secondary">&lt; 従業員管理へ戻る</a>
+        </div>
+
+        {% if offers %}
+        <div style="margin-bottom: 20px;">
+            <h3 style="margin-bottom: 10px;">交渉中 (オファー済み)</h3>
+            <table class="data-table" style="background-color: rgba(255,255,255,0.05);">
+                <thead>
+                    <tr>
+                        <th>氏名</th>
+                        <th>年齢</th>
+                        <th>提示年収</th>
+                        <th>配属予定</th>
+                        <th>ステータス</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for offer in offers %}
+                    <tr>
+                        <td><a href="{{ url_for('npc_detail', npc_id=offer.npc_id) }}" style="color: #4db8ff;">{{ offer.name }}</a></td>
+                        <td>{{ offer.age }}</td>
+                        <td>¥{{ "{:,.2f}M".format(offer.offer_salary / 1000000) }}</td>
+                        <td>{{ offer.target_dept }}</td>
+                        <td><span style="color: #4db8ff; font-weight: bold;">回答待ち</span></td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        <hr style="margin: 20px 0; border: 0; border-top: 1px solid var(--border-color);">
+        {% endif %}
+
+        <!-- 候補者フィルタ -->
+        <div class="filter-container" style="background: rgba(255,255,255,0.05); padding: 10px; border-radius: 4px; margin-bottom: 15px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+            <span style="font-weight: bold; color: var(--text-muted);">条件検索:</span>
+            <select id="cand-filter-stat" class="form-control" style="width: auto; padding: 4px; font-size: 13px;" onchange="filterCandidates()">
+                <option value="">能力値指定なし</option>
+                <option value="4">勤勉さ</option>
+                <option value="5">適応力</option>
+                <option value="6">生産力</option>
+                <option value="7">店舗運営</option>
+                <option value="8">営業力</option>
+                <option value="9">人事力</option>
+                <option value="10">開発力</option>
+                <option value="11">広報力</option>
+                <option value="12">経理力</option>
+                <option value="13">マネジメント</option>
+            </select>
+            <input type="number" id="cand-filter-stat-val" class="form-control" style="width: 70px; padding: 4px; font-size: 13px;" placeholder="以上" onkeyup="filterCandidates()" onchange="filterCandidates()">
+            
+            <span style="color: var(--text-muted); margin-left: 5px; font-size: 0.9em;">給与上限:</span>
+            <input type="number" id="cand-filter-salary" class="form-control" style="width: 80px; padding: 4px; font-size: 13px;" placeholder="万円" step="10" onkeyup="filterCandidates()" onchange="filterCandidates()">
+            
+            <span style="color: var(--text-muted); margin-left: 5px; font-size: 0.9em;">年齢上限:</span>
+            <input type="number" id="cand-filter-age" class="form-control" style="width: 60px; padding: 4px; font-size: 13px;" placeholder="歳" onkeyup="filterCandidates()" onchange="filterCandidates()">
+            
+            <input type="text" id="cand-filter-name" class="form-control" style="width: 120px; padding: 4px; font-size: 13px; margin-left: auto;" placeholder="氏名検索" onkeyup="filterCandidates()">
+        </div>
+
+        <div class="action-bar" style="margin-bottom: 10px; justify-content: flex-start;">
+            <button class="btn btn-primary" onclick="submitBulkOffers()">選択した候補者に一括オファー</button>
+        </div>
+
+        <div class="table-container">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th class="no-sort" style="width: 30px; text-align: center;"><input type="checkbox" id="check-all" onclick="toggleAllCandidates(this)" style="cursor: pointer;"></th>
+                        <th class="sortable" onclick="sortTable(this, 1)">氏名</th>
+                        <th class="sortable" onclick="sortTable(this, 2, 'number')">年齢</th>
+                        <th class="sortable" onclick="sortTable(this, 3, 'number')">希望給与</th>
+                        <th class="sortable" onclick="sortTable(this, 4, 'number')">勤勉さ</th>
+                        <th class="sortable" onclick="sortTable(this, 5, 'number')">適応力</th>
+                        <th class="sortable" onclick="sortTable(this, 6, 'number')">生産力</th>
+                        <th class="sortable" onclick="sortTable(this, 7, 'number')">店舗</th>
+                        <th class="sortable" onclick="sortTable(this, 8, 'number')">営業</th>
+                        <th class="sortable" onclick="sortTable(this, 9, 'number')">人事</th>
+                        <th class="sortable" onclick="sortTable(this, 10, 'number')">開発</th>
+                        <th class="sortable" onclick="sortTable(this, 11, 'number')">広報</th>
+                        <th class="sortable" onclick="sortTable(this, 12, 'number')">経理</th>
+                        <th class="sortable" onclick="sortTable(this, 13, 'number')">マネジ</th>
+                        <th class="no-sort">操作</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for cand in candidates %}
+                    <tr data-name="{{ cand.name }}" data-salary="{{ cand.desired_salary }}">
+                        <td style="text-align: center;">
+                            {% if cand.id not in offered_npc_ids %}
+                            <input type="checkbox" class="offer-checkbox" value="{{ cand.id }}" style="cursor: pointer;">
+                            {% endif %}
+                        </td>
+                        <td><a href="{{ url_for('npc_detail', npc_id=cand.id) }}" style="color: #4db8ff;">{{ cand.name }}</a></td>
+                        <td>{{ cand.age }}</td>
+                        <td data-value="{{ cand.desired_salary }}">¥{{ "{:,.2f}M".format(cand.desired_salary / 1000000) }}</td>
+                        <td data-value="{{ cand.diligence | perceived_value(hr_power) }}">{{ cand.diligence | ability_range_colored(hr_power) }}</td>
+                        <td data-value="{{ cand.adaptability | perceived_value(hr_power) }}">{{ cand.adaptability | ability_range_colored(hr_power) }}</td>
+                        <td data-value="{{ cand.production | perceived_value(hr_power) }}">{{ cand.production | ability_range_colored(hr_power) }}</td>
+                        <td data-value="{{ cand.store_ops | perceived_value(hr_power) }}">{{ cand.store_ops | ability_range_colored(hr_power) }}</td>
+                        <td data-value="{{ cand.sales | perceived_value(hr_power) }}">{{ cand.sales | ability_range_colored(hr_power) }}</td>
+                        <td data-value="{{ cand.hr | perceived_value(hr_power) }}">{{ cand.hr | ability_range_colored(hr_power) }}</td>
+                        <td data-value="{{ cand.development | perceived_value(hr_power) }}">{{ cand.development | ability_range_colored(hr_power) }}</td>
+                        <td data-value="{{ cand.pr | perceived_value(hr_power) }}">{{ cand.pr | ability_range_colored(hr_power) }}</td>
+                        <td data-value="{{ cand.accounting | perceived_value(hr_power) }}">{{ cand.accounting | ability_range_colored(hr_power) }}</td>
+                        <td data-value="{{ cand.management | perceived_value(hr_power) }}">{{ cand.management | ability_range_colored(hr_power) }}</td>
+                        <td>
+                            {% if cand.id in offered_npc_ids %}
+                                <button class="btn btn-small btn-secondary" disabled style="opacity: 0.6; cursor: not-allowed;">オファー済</button>
+                            {% else %}
+                                <form action="{{ url_for('hr_hire') }}" method="post" style="display:flex; align-items: center; gap: 5px;">
+                                    <input type="hidden" name="npc_id" value="{{ cand.id }}">
+                                    <input type="hidden" name="offer_salary" value="{{ cand.desired_salary }}">
+                                    <select name="target_dept" class="form-control dept-select" style="padding: 4px; width: auto; font-size: 12px;">
+                                        {% for dept in departments %}<option value="{{ dept }}">{{ dept }}</option>{% endfor %}
+                                    </select>
+                                    <button type="submit" class="btn btn-small btn-primary">オファー</button>
+                                </form>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<script>
+    function toggleAllCandidates(source) {
+        document.querySelectorAll('.offer-checkbox').forEach(cb => {
+            if(!cb.disabled) cb.checked = source.checked;
+        });
+    }
+
+    function submitBulkOffers() {
+        const selected = [];
+        document.querySelectorAll('.offer-checkbox:checked').forEach(cb => {
+            const row = cb.closest('tr');
+            const npcId = cb.value;
+            const salaryInput = row.querySelector('input[name="offer_salary"]');
+            const deptInput = row.querySelector('.dept-select');
+            
+            if (salaryInput && deptInput) {
+                selected.push({
+                    npc_id: npcId, 
+                    offer_salary: salaryInput.value, 
+                    target_dept: deptInput.value
+                });
+            }
+        });
+        
+        if (selected.length === 0) return alert("候補者を選択してください");
+        
+        fetch("{{ url_for('hr_hire_bulk') }}", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({offers: selected})
+        }).then(res => res.json())
+          .then(data => {
+            if (data.status === 'success') {
+                window.location.reload();
+            }
+        });
+    }
+
+    function filterCandidates() {
+        const statIdx = document.getElementById('cand-filter-stat').value;
+        const statVal = parseFloat(document.getElementById('cand-filter-stat-val').value) || 0;
+        const salaryMax = parseFloat(document.getElementById('cand-filter-salary').value);
+        const ageMax = parseFloat(document.getElementById('cand-filter-age').value);
+        const name = document.getElementById('cand-filter-name').value.toLowerCase();
+
+        const rows = document.querySelectorAll('tbody tr');
+        rows.forEach(row => {
+            if (!row.hasAttribute('data-name')) return;
+
+            let show = true;
+            const rName = row.getAttribute('data-name').toLowerCase();
+            if (name && !rName.includes(name)) show = false;
+
+            if (show && salaryMax) {
+                const rSalary = parseFloat(row.getAttribute('data-salary'));
+                if (rSalary > salaryMax * 10000) show = false;
+            }
+
+            if (show && ageMax) {
+                const ageCell = row.children[2];
+                if (ageCell) {
+                    const age = parseFloat(ageCell.innerText);
+                    if (age > ageMax) show = false;
+                }
+            }
+
+            if (show && statIdx && statVal > 0) {
+                const cell = row.children[statIdx];
+                if (cell) {
+                    const val = parseFloat(cell.getAttribute('data-value')) || 0;
+                    if (val < statVal) show = false;
+                }
+            }
+
+            row.style.display = show ? '' : 'none';
+        });
+    }
+</script>
+{% endblock %}

@@ -54,7 +54,12 @@
                                 <tr>
                                     <td>{{ label }}</td>
                                     <td style="color: #4db8ff;">{{ header_caps[key]|int }}</td>
-                                    <td>{{ header_caps[key + '_capacity']|int }}</td>
+                                    <td>
+                                        {{ header_caps[key + '_capacity']|int }}
+                                        {% if header_caps.requirements.get(key) is not none %}
+                                        <span style="font-size: 0.8em; color: #aaa;">({{ header_caps.requirements[key]|int }})</span>
+                                        {% endif %}
+                                    </td>
                                 </tr>
                                 {% endfor %}
                             </tbody>
@@ -81,6 +86,7 @@
                 <a href="{{ url_for('store') }}" class="{{ 'active' if active_page == 'store' else '' }}">店舗</a>
                 <a href="{{ url_for('sales') }}" class="{{ 'active' if active_page == 'sales' else '' }}">営業部</a>
                 <a href="{{ url_for('hr') }}" class="{{ 'active' if active_page == 'hr' else '' }}">人事部</a>
+                <a href="{{ url_for('hire_page') }}" class="{{ 'active' if active_page == 'hire_page' else '' }}">採用</a>
                 <a href="{{ url_for('dev') }}" class="{{ 'active' if active_page == 'dev' else '' }}">開発部</a>
                 <a href="{{ url_for('pr') }}" class="{{ 'active' if active_page == 'pr' else '' }}">広報部</a>
                 <a href="{{ url_for('facility') }}" class="{{ 'active' if active_page == 'facility' else '' }}">施設</a>

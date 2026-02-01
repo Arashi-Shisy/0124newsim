@@ -3,6 +3,49 @@
 
 {% block content %}
 <div class="dashboard-grid">
+    <!-- IPO申請セクション (未上場時のみ表示) -->
+    {% if listing_status == 'private' or listing_status == 'applying' %}
+    <div class="card card-large">
+        <div class="card-header">
+            <h2>新規上場 (IPO) 申請</h2>
+        </div>
+        <div class="card-body">
+            {% if listing_status == 'applying' %}
+                <div style="text-align: center; padding: 20px;">
+                    <h3 style="color: #4db8ff;">審査中</h3>
+                    <p>現在、証券取引所による審査が行われています。<br>次週の結果をお待ちください。</p>
+                </div>
+            {% else %}
+                <p>上場基準を満たすことで、IPO（新規株式公開）を申請できます。<br>上場すると、公募増資による巨額の資金調達が可能になり、知名度が大幅に向上します。</p>
+                
+                <div style="margin: 15px 0; background: rgba(255,255,255,0.05); padding: 15px; border-radius: 8px;">
+                    <h4 style="margin-top: 0;">上場審査基準</h4>
+                    <ul style="list-style: none; padding: 0;">
+                        <li style="margin-bottom: 5px;">
+                            <span style="{{ 'color: #4caf50;' if ipo_check.is_eligible or '純資産不足' not in ipo_check.reasons|join else 'color: #e94560;' }}">●</span> 
+                            純資産 {{ "{:,}".format(ipo_check.min_assets // 100000000) }}億円以上
+                        </li>
+                        <li style="margin-bottom: 5px;">
+                            <span style="{{ 'color: #4caf50;' if ipo_check.is_eligible or '累積赤字' not in ipo_check.reasons|join else 'color: #e94560;' }}">●</span> 
+                            直近{{ ipo_check.min_profit_weeks }}週間の累積黒字
+                        </li>
+                        <li style="margin-bottom: 5px;">
+                            <span style="{{ 'color: #4caf50;' if ipo_check.is_eligible or '信用格付け不足' not in ipo_check.reasons|join else 'color: #e94560;' }}">●</span> 
+                            信用格付け {{ ipo_check.min_rating }}以上
+                        </li>
+                    </ul>
+                </div>
+
+                <form action="{{ url_for('ipo_apply') }}" method="post" style="text-align: right;">
+                    <button type="submit" class="btn btn-primary" {{ 'disabled' if not ipo_check.is_eligible else '' }}>
+                        IPO申請を行う
+                    </button>
+                </form>
+            {% endif %}
+        </div>
+    </div>
+    {% endif %}
+
     <!-- 株価情報 -->
     <div class="card card-large">
         <div class="card-header">
@@ -40,10 +83,13 @@
             </div>
             
             <div style="margin-top: 20px;">
-                <h3 style="font-size: 1em; color: var(--text-muted); margin-bottom: 10px;">株価推移 (直近10週)</h3>
+                <h3 style="font-size: 1em; color: var(--text-muted); margin-bottom: 10px;">株価推移 (直近20週・分割調整後)</h3>
                 <div style="display: flex; align-items: flex-end; height: 100px; gap: 5px;">
                     {% for h in history[-20:] %}
-                    <div style="flex: 1; background: #0f3460; height: {{ (h.stock_price / (player.stock_price * 1.5) * 100)|int }}%; min-height: 1px; position: relative;" title="Week {{ h.week }}: ¥{{ h.stock_price }}"></div>
+                    {% set adjusted_price = ((h.market_cap or 0) / player.outstanding_shares) if player.outstanding_shares > 0 else 0 %}
+                    {% set max_scale = player.stock_price * 1.5 %}
+                    {% set height_pct = (adjusted_price / max_scale * 100)|int if max_scale > 0 else 0 %}
+                    <div style="flex: 1; background: #0f3460; height: {{ [height_pct, 100]|min }}%; min-height: 1px; position: relative;" title="Week {{ h.week }}: ¥{{ '{:,}'.format(h.stock_price) }} (調整後: ¥{{ '{:,}'.format(adjusted_price|int) }})"></div>
                     {% endfor %}
                 </div>
             </div>

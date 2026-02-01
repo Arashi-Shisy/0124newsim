@@ -935,3 +935,85 @@ class NPCLogic:
                 # 現状はMSRPに合わせる (メーカーが価格改定した場合に追従)
                 if s['sales_price'] != msrp:
                     db.execute_query("UPDATE inventory SET sales_price = ? WHERE id = ?", (msrp, s['id']))
+
+    def decide_stock_action(self, current_week):
+        """
+        株式関連の意思決定 (IPO, 増資, 自社株買い)
+        """
+        # 1. IPO申請 (未上場の場合)
+        if self.company['listing_status'] == 'private':
+            # IPO要件チェック (簡易)
+            funds = self.company['funds']
+            inv_val = db.fetch_one("SELECT SUM(quantity * sales_price * 0.5) as val FROM inventory WHERE company_id = ?", (self.company_id,))['val'] or 0
+            fac_val = db.fetch_one("SELECT SUM(rent * 100) as val FROM facilities WHERE company_id = ? AND is_owned = 1", (self.company_id,))['val'] or 0
+            debt = db.fetch_one("SELECT SUM(amount) as val FROM loans WHERE company_id = ?", (self.company_id,))['val'] or 0
+            
+            net_assets = funds + inv_val + fac_val - debt
+            
+            # 黒字要件
+            profit_res = db.fetch_one("""
+                SELECT SUM(CASE WHEN category = 'revenue' THEN amount ELSE 0 END) - 
+                       SUM(CASE WHEN category NOT IN ('revenue', 'material', 'stock_purchase', 'facility_purchase', 'facility_sell', 'equity_finance') THEN amount ELSE 0 END) as profit
+                FROM account_entries WHERE company_id = ? AND week >= ?
+            """, (self.company_id, current_week - gb.IPO_MIN_PROFIT_WEEKS))
+            recent_profit = profit_res['profit'] or 0
+            
+            is_eligible = (
+                net_assets >= gb.IPO_MIN_NET_ASSETS and
+                recent_profit > 0 and
+                self.company['credit_rating'] >= gb.IPO_MIN_CREDIT_RATING
+            )
+            
+            # 申請判断: GROWTHフェーズ または 資金調達が必要
+            if is_eligible and (self.phase == 'GROWTH' or self.company['funds'] < net_assets * 0.2):
+                db.execute_query("UPDATE companies SET listing_status = 'applying' WHERE id = ?", (self.company_id,))
+                db.log_file_event(current_week, self.company_id, "IPO Application", "Applied for IPO")
+
+        # 2. 上場企業のアクション
+        elif self.company['listing_status'] == 'public':
+            stock_price = self.company['stock_price']
+            shares = self.company['outstanding_shares']
+            
+            # BPS/PBR計算 (簡易)
+            funds = self.company['funds']
+            # ... (資産計算はIPO時と同様だが省略し、fundsベースで判断)
+            # PBR代用として、時価総額と資金の比率を見る (資金リッチなら自社株買い、資金不足なら増資)
+            
+            # A. 公募増資 (Public Offering)
+            # 資金不足 (CRISIS) または 成長投資 (GROWTH) で資金が足りない
+            if (self.phase == 'CRISIS' or (self.phase == 'GROWTH' and funds < 500000000)):
+                new_shares = int(shares * 0.1) # 10%増資
+                issue_price = int(stock_price * 0.95) # 5%ディスカウント
+                raised_amount = new_shares * issue_price
+                
+                db.execute_query("UPDATE companies SET funds = funds + ?, outstanding_shares = outstanding_shares + ? WHERE id = ?", (raised_amount, new_shares, self.company_id))
+                db.execute_query("INSERT INTO account_entries (week, company_id, category, amount) VALUES (?, ?, 'equity_finance', ?)", (current_week, self.company_id, raised_amount))
+                db.log_file_event(current_week, self.company_id, "Public Offering", f"Issued {new_shares} shares, raised {raised_amount}")
+                db.execute_query("INSERT INTO news_logs (week, company_id, message, type) VALUES (?, ?, ?, ?)", (current_week, self.company_id, f"公募増資を実施し、{raised_amount:,}円を調達しました。", 'market'))
+
+            # B. 自社株買い (Buyback)
+            # 資金余剰 (STABLE/GROWTH) かつ 資金が潤沢 (20億円以上)
+            elif self.phase in ['STABLE', 'GROWTH'] and funds > 2000000000:
+                budget = int(funds * 0.05) # 資金の5%を使う
+                buy_price = int(stock_price * 1.05)
+                buy_shares = int(budget / buy_price)
+                if buy_shares > 0:
+                    db.execute_query("UPDATE companies SET funds = funds - ?, outstanding_shares = outstanding_shares - ? WHERE id = ?", (budget, buy_shares, self.company_id))
+                    db.execute_query("INSERT INTO account_entries (week, company_id, category, amount) VALUES (?, ?, 'equity_finance', ?)", (current_week, self.company_id, -budget))
+                    db.log_file_event(current_week, self.company_id, "Stock Buyback", f"Bought back {buy_shares} shares, cost {budget}")
+
+        elif self.company['type'] == 'npc_retail':
+            # 小売: inventory の sales_price を更新
+            # designsテーブルは全社分持っているので、design_idで引けるように辞書化
+            all_designs_map = {d['id']: d for d in designs}
+
+            for s in inventory:
+                design = all_designs_map.get(s['design_id'])
+                if not design: continue
+                msrp = design['sales_price']
+
+                # 基本戦略: MSRP通りに売る
+                # 売れ残りが多い場合は値下げするなどのロジックをここに追加可能
+                # 現状はMSRPに合わせる (メーカーが価格改定した場合に追従)
+                if s['sales_price'] != msrp:
+                    db.execute_query("UPDATE inventory SET sales_price = ? WHERE id = ?", (msrp, s['id']))
