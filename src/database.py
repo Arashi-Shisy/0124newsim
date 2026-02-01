@@ -304,14 +304,20 @@ class Database:
         conn.commit()
         conn.close()
 
-    def execute_query(self, query, params=()):
+    def _execute(self, query, params, fetch_mode=None):
         conn, should_close = self.get_connection()
         try:
             cursor = conn.cursor()
             cursor.execute(query, params)
-            if should_close:
-                conn.commit()
-            return cursor.lastrowid
+            
+            if fetch_mode == 'one':
+                return cursor.fetchone()
+            elif fetch_mode == 'all':
+                return cursor.fetchall()
+            else:
+                if should_close:
+                    conn.commit()
+                return cursor.lastrowid
         except:
             if should_close:
                 conn.rollback()
@@ -320,27 +326,14 @@ class Database:
             if should_close:
                 conn.close()
 
+    def execute_query(self, query, params=()):
+        return self._execute(query, params, fetch_mode=None)
+
     def fetch_one(self, query, params=()):
-        conn, should_close = self.get_connection()
-        try:
-            cursor = conn.cursor()
-            cursor.execute(query, params)
-            result = cursor.fetchone()
-            return result
-        finally:
-            if should_close:
-                conn.close()
+        return self._execute(query, params, fetch_mode='one')
 
     def fetch_all(self, query, params=()):
-        conn, should_close = self.get_connection()
-        try:
-            cursor = conn.cursor()
-            cursor.execute(query, params)
-            result = cursor.fetchall()
-            return result
-        finally:
-            if should_close:
-                conn.close()
+        return self._execute(query, params, fetch_mode='all')
             
     @contextmanager
     def transaction(self):

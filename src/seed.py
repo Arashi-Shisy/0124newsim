@@ -122,6 +122,11 @@ def run_seed():
     num_npc_makers = 8 # 競合を増やして難易度アップ
     num_npc_retailers = 3
     
+    # メーカーシェア配分 (Power Law的分布)
+    # 業界の階層構造を再現 (リーダー、チャレンジャー、フォロワー、ニッチ)
+    maker_shares = [0.30, 0.20, 0.15, 0.10, 0.08, 0.07, 0.05, 0.05]
+    random.shuffle(maker_shares) # ランダムに割り当て
+    
     # 2. 企業作成
     # プレイヤー企業
     player_id = db.execute_query("""
@@ -131,6 +136,8 @@ def run_seed():
 
     # NPCメーカー
     npc_maker_ids = []
+    maker_share_map = {} # id -> share_qty
+    
     for i in range(num_npc_makers):
         name = name_generator.generate_company_name('npc_maker')
         mid = db.execute_query("""
@@ -138,6 +145,9 @@ def run_seed():
             VALUES (?, 'npc_maker', ?, ?, ?, ?, 'public')
         """, (name, gb.INITIAL_FUNDS_MAKER, gb.INITIAL_STOCK_PRICE, gb.INITIAL_SHARES, gb.INITIAL_STOCK_PRICE * gb.INITIAL_SHARES))
         npc_maker_ids.append(mid)
+        
+        share_pct = maker_shares[i] if i < len(maker_shares) else 0.05
+        maker_share_map[mid] = demand * share_pct
 
     # NPC小売
     for i in range(num_npc_retailers):
@@ -168,7 +178,6 @@ def run_seed():
     # 企業ごとの必要人員計算と生成
     # メーカー (NPC Makers only - Player starts with nothing)
     maker_ids = npc_maker_ids
-    maker_share = demand / len(maker_ids)
     
     # 小売 (NPC Retailers)
     retail_ids = []
@@ -247,7 +256,8 @@ def run_seed():
 
     print("Generating Employees...")
     for mid in maker_ids:
-        req = add_employees(mid, 'maker', maker_share)
+        demand_qty = maker_share_map.get(mid, demand / len(maker_ids))
+        req = add_employees(mid, 'maker', demand_qty)
         total_factory_needs += req['factory']
         total_office_needs += req['office']
 
@@ -300,9 +310,6 @@ def run_seed():
             "cost": int(part['base_cost'] * supplier['trait_cost_multiplier'])
         }
 
-    # メーカー1社あたりの週次期待需要 (市場規模 / メーカー数)
-    expected_maker_demand = int(gb.BASE_MARKET_DEMAND / len(maker_ids))
-    
     # 初期モデルの基準価格を、開発完了時と同じロジックで計算
     initial_material_cost = sum(p['cost'] for p in model_t_parts.values())
     initial_concept_score = 3.0
@@ -321,7 +328,8 @@ def run_seed():
 
         # 5. 初期在庫
         # 2週分程度の在庫を持たせる
-        initial_stock = expected_maker_demand * 2
+        demand_qty = maker_share_map.get(mid, demand / len(maker_ids))
+        initial_stock = int(demand_qty * 2)
         db.execute_query("INSERT INTO inventory (company_id, design_id, quantity, sales_price) VALUES (?, ?, ?, ?)", (mid, design_id, initial_stock, initial_base_price))
 
     # プレイヤー企業用: 初期設計書のみ付与 (在庫なし)
@@ -337,12 +345,14 @@ def run_seed():
     # 各メーカーの商品を均等に取り扱うと仮定
     if retail_ids:
         expected_retail_demand = int(gb.BASE_MARKET_DEMAND / len(retail_ids))
-        stock_per_model = int((expected_retail_demand * 2) / len(maker_ids))
         
         for rid in retail_ids:
             for mid, did in maker_design_map.items():
+                # メーカーのシェアに応じて在庫を持つ
+                maker_share_pct = maker_share_map.get(mid, 0) / demand
+                stock_qty = int(expected_retail_demand * 2 * maker_share_pct)
                 db.execute_query("INSERT INTO inventory (company_id, design_id, quantity, sales_price) VALUES (?, ?, ?, ?)", 
-                                 (rid, did, stock_per_model, initial_base_price))
+                                 (rid, did, stock_qty, initial_base_price))
 
     # 6. 施設生成
     # 各企業に必要な施設を生成して割り当てる
@@ -381,6 +391,51 @@ def run_seed():
         finally:
             if should_close:
                 conn.close()
+    
+    # 7. 資金・株価の再計算 (規模に応じた設定)
+    print("Recalculating Company Funds & Valuation...")
+    
+    companies = db.fetch_all("SELECT id, type FROM companies WHERE type IN ('npc_maker', 'npc_retail')")
+    
+    for comp in companies:
+        cid = comp['id']
+        
+        # 固定費計算
+        labor_cost = db.fetch_one("SELECT SUM(salary) as total FROM npcs WHERE company_id = ?", (cid,))['total'] or 0
+        weekly_labor = (labor_cost * gb.NPC_SCALE_FACTOR) / gb.WEEKS_PER_YEAR_REAL
+        
+        rent_cost = db.fetch_one("SELECT SUM(rent) as total FROM facilities WHERE company_id = ?", (cid,))['total'] or 0
+        
+        weekly_fixed = int(weekly_labor + rent_cost)
+        
+        # 初期資金: 固定費の26週分 (約6ヶ月)
+        initial_funds = weekly_fixed * 26
+        
+        # 時価総額計算
+        if comp['type'] == 'npc_maker':
+            share_qty = maker_share_map.get(cid, 0)
+            weekly_rev = share_qty * gb.MAKER_UNIT_SALES_PRICE
+        else:
+            share_qty = gb.BASE_MARKET_DEMAND / num_npc_retailers
+            weekly_rev = share_qty * gb.RETAIL_UNIT_SALES_PRICE_BASE
+            
+        # 予想利益 (営業利益率 5%と仮定)
+        weekly_profit = weekly_rev * 0.05
+        yearly_profit = weekly_profit * 52
+        
+        # PER 15倍
+        market_cap = int(yearly_profit * 15)
+        market_cap = max(market_cap, initial_funds) # 最低保証
+        
+        # 株価固定、発行済株式数を調整
+        stock_price = 50000
+        outstanding_shares = int(market_cap / stock_price)
+        
+        db.execute_query("""
+            UPDATE companies 
+            SET funds = ?, market_cap = ?, outstanding_shares = ?, stock_price = ?
+            WHERE id = ?
+        """, (initial_funds, market_cap, outstanding_shares, stock_price, cid))
 
     print("Seed data initialized.")
 

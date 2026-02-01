@@ -51,15 +51,10 @@ class NPCLogic:
         """固定費（人件費、家賃、金利）の週次合計を算出"""
         # Labor
         labor = sum(e['salary'] * gb.NPC_SCALE_FACTOR for e in self.employees) / gb.WEEKS_PER_YEAR_REAL
-        
         # Rent
-        res_rent = db.fetch_one("SELECT SUM(rent) as total FROM facilities WHERE company_id = ? AND is_owned = 0", (self.company_id,))
-        rent = res_rent['total'] or 0
-        
+        rent = db.fetch_one("SELECT SUM(rent) as total FROM facilities WHERE company_id = ? AND is_owned = 0", (self.company_id,))['total'] or 0
         # Interest
-        res_loan = db.fetch_one("SELECT SUM(amount * interest_rate) as total FROM loans WHERE company_id = ?", (self.company_id,))
-        interest = (res_loan['total'] or 0) / 52.0
-        
+        interest = (db.fetch_one("SELECT SUM(amount * interest_rate) as total FROM loans WHERE company_id = ?", (self.company_id,))['total'] or 0) / 52.0
         return int(labor + rent + interest)
 
     def update_phase(self, current_week):
@@ -140,9 +135,7 @@ class NPCLogic:
             if self.phase == 'GROWTH' and needed > 0: should_borrow = True # 成長投資用
 
             if should_borrow and borrowable > borrow_threshold:
-                amount = min(borrowable, needed)
-                # 最低単位
-                amount = max(amount, borrow_threshold)
+                amount = max(min(borrowable, needed), borrow_threshold)
                 
                 # 金利決定 (格付けが高いほど低い)
                 rating = self.company['credit_rating']
@@ -499,12 +492,9 @@ class NPCLogic:
             fixed_costs = self._calculate_weekly_fixed_costs()
             
             # 資金計算の改善: CRISIS時や在庫切れ時は、借入枠も含めて全力で生産する
-            available_funds = max(0, self.company['funds'] - (fixed_costs * 4))
-            
+            available_funds = max(0, self.company['funds'] - (fixed_costs * 4)) 
             if self.phase == 'CRISIS' or current_stock == 0:
-                # 借入余力もあてにする
-                loans = db.fetch_one("SELECT SUM(amount) as total FROM loans WHERE company_id = ?", (self.company_id,))
-                credit_room = self.company['borrowing_limit'] - (loans['total'] or 0)
+                credit_room = self.company['borrowing_limit'] - (db.fetch_one("SELECT SUM(amount) as total FROM loans WHERE company_id = ?", (self.company_id,))['total'] or 0)
                 available_funds = self.company['funds'] + credit_room
 
             if available_funds < total_cost and total_cost > 0:

@@ -34,14 +34,12 @@ class Simulation:
                 SELECT department, role, diligence, production, development, sales, hr, pr, accounting, store_ops, management 
                 FROM npcs WHERE company_id = ?""", (company_id,))
         
-        caps = {
-            'production': 0, 'development': 0, 'sales': 0, 
-            'hr': 0, 'pr': 0, 'accounting': 0, 'store_ops': 0,
-            'stability': 0,
-            'production_capacity': 0, 'development_capacity': 0, 'sales_capacity': 0,
-            'hr_capacity': 0, 'pr_capacity': 0, 'accounting_capacity': 0, 'store_ops_capacity': 0,
-            'store_throughput': 0
-        }
+        # 初期化
+        keys = ['production', 'development', 'sales', 'hr', 'pr', 'accounting', 'store_ops']
+        caps = {k: 0 for k in keys}
+        caps.update({f"{k}_capacity": 0 for k in keys})
+        caps.update({'stability': 0, 'store_throughput': 0})
+        
         # 要求値と充足率の記録用
         caps['requirements'] = {
             'development': 0, 'sales': 0, 'pr': 0, 'hr': 0, 'accounting': 0
@@ -886,6 +884,17 @@ class Simulation:
             updates_to_run = []
             labor_costs = {}
 
+            # 部署と給与カテゴリのマッピング
+            dept_labor_map = {
+                gb.DEPT_PRODUCTION: 'labor_production',
+                gb.DEPT_STORE: 'labor_store',
+                gb.DEPT_SALES: 'labor_sales',
+                gb.DEPT_DEV: 'labor_dev',
+                gb.DEPT_HR: 'labor_hr',
+                gb.DEPT_PR: 'labor_pr',
+                gb.DEPT_ACCOUNTING: 'labor_accounting'
+            }
+
             for npc in employees:
                 # 個別の忠誠度変動要因
                 individual_loyalty_delta = loyalty_delta
@@ -903,50 +912,34 @@ class Simulation:
                 # 基本成長率: 0.025 * 2^(Adaptability/50)
                 base_growth = 0.025 * (2 ** (npc['adaptability'] / 50.0))
                 
-                updates = []
-                params = []
+                changes = {}
 
                 # 部署ボーナス
                 dept = npc['department']
-                target_stat = None
-                if dept == gb.DEPT_PRODUCTION: target_stat = 'production'
-                elif dept == gb.DEPT_SALES: target_stat = 'sales'
-                elif dept == gb.DEPT_DEV: target_stat = 'development'
-                elif dept == gb.DEPT_HR: target_stat = 'hr'
-                elif dept == gb.DEPT_PR: target_stat = 'pr'
-                elif dept == gb.DEPT_ACCOUNTING: target_stat = 'accounting'
-                elif dept == gb.DEPT_STORE: target_stat = 'store_ops'
+                stat_map = {
+                    gb.DEPT_PRODUCTION: 'production', gb.DEPT_SALES: 'sales', gb.DEPT_DEV: 'development',
+                    gb.DEPT_HR: 'hr', gb.DEPT_PR: 'pr', gb.DEPT_ACCOUNTING: 'accounting', gb.DEPT_STORE: 'store_ops'
+                }
+                target_stat = stat_map.get(dept)
                 
                 if target_stat:
-                    new_stat = min(gb.ABILITY_MAX, npc[target_stat] + base_growth)
-                    updates.append(f"{target_stat} = ?")
-                    params.append(new_stat)
+                    changes[target_stat] = min(gb.ABILITY_MAX, npc[target_stat] + base_growth)
                 
                 # マネジメント (部長補佐以上)
                 if npc['role'] in [gb.ROLE_ASSISTANT_MANAGER, gb.ROLE_MANAGER, gb.ROLE_CXO, gb.ROLE_CEO]:
-                     new_mgmt = min(gb.ABILITY_MAX, npc['management'] + base_growth)
-                     updates.append("management = ?")
-                     params.append(new_mgmt)
+                     changes['management'] = min(gb.ABILITY_MAX, npc['management'] + base_growth)
                      
                 # 役員適正 (部長以上)
                 if npc['role'] in [gb.ROLE_MANAGER, gb.ROLE_CXO, gb.ROLE_CEO]:
                     # 適応力50なら0.1 -> base_growth * 2
-                    new_exec = min(gb.ABILITY_MAX, npc['executive'] + (base_growth * 2))
-                    updates.append("executive = ?")
-                    params.append(new_exec)
+                    changes['executive'] = min(gb.ABILITY_MAX, npc['executive'] + (base_growth * 2))
                 
                 # 業界適性
                 current_apt = npc['industry_aptitude']
                 if current_apt < 2.0:
                     speed_factor = npc['adaptability'] / 50.0
-                    if current_apt < 1.0:
-                        apt_growth = (0.9 / 13.0) * speed_factor
-                    else:
-                        apt_growth = (1.0 / 260.0) * speed_factor
-                    
-                    new_apt = min(2.0, current_apt + apt_growth)
-                    updates.append("industry_aptitude = ?")
-                    params.append(new_apt)
+                    apt_growth = (0.9 / 13.0) * speed_factor if current_apt < 1.0 else (1.0 / 260.0) * speed_factor
+                    changes['industry_aptitude'] = min(2.0, current_apt + apt_growth)
 
                 # 3. 希望給与の更新 (年に1回)
                 if week % 52 == 0:
@@ -959,8 +952,7 @@ class Simulation:
                     
                     # 多少の揺らぎを持たせて希望給与を設定 (0.95 ~ 1.1倍)
                     new_desired = int(base_req * random.uniform(0.95, 1.1))
-                    updates.append("desired_salary = ?")
-                    params.append(new_desired)
+                    changes['desired_salary'] = new_desired
                     
                     if new_desired > npc['salary'] * 1.1:
                         self.log_news(week, comp['id'], f"{npc['name']} が昇給を希望しています (希望: ¥{new_desired:,})", 'info')
@@ -972,31 +964,24 @@ class Simulation:
                     resign_prob = (40 - new_loyalty) * 0.005
                     if random.random() < resign_prob:
                         # 離職実行 (会社ID等をNULLにして労働市場へ戻す)
-                        updates.extend(["company_id = NULL", "department = NULL", "role = NULL", "loyalty = 50", "last_resigned_week = ?", "last_company_id = ?"])
-                        params.extend([week, comp['id']])
+                        changes.update({
+                            "company_id": None, "department": None, "role": None, "loyalty": 50,
+                            "last_resigned_week": week, "last_company_id": comp['id']
+                        })
                         self.log_news(week, comp['id'], f"従業員 {npc['name']} が退職しました。", 'warning')
                         db.log_file_event(week, comp['id'], "HR Resignation", f"{npc['name']} resigned")
 
-                updates.append("loyalty = ?")
-                params.append(new_loyalty)
+                changes['loyalty'] = new_loyalty
                 
-                if updates:
-                    sql = f"UPDATE npcs SET {', '.join(updates)} WHERE id = ?"
-                    params.append(npc['id'])
-                    updates_to_run.append((sql, tuple(params)))
+                if changes:
+                    set_clause = ", ".join(f"{k} = ?" for k in changes.keys())
+                    params = list(changes.values()) + [npc['id']]
+                    updates_to_run.append((f"UPDATE npcs SET {set_clause} WHERE id = ?", tuple(params)))
 
                 # 3. 給与支払い
                 weekly_salary = int((npc['salary'] * gb.NPC_SCALE_FACTOR) / gb.WEEKS_PER_YEAR_REAL)
                 
-                dept = npc['department']
-                cat = 'labor'
-                if dept == gb.DEPT_PRODUCTION: cat = 'labor_production'
-                elif dept == gb.DEPT_STORE: cat = 'labor_store'
-                elif dept == gb.DEPT_SALES: cat = 'labor_sales'
-                elif dept == gb.DEPT_DEV: cat = 'labor_dev'
-                elif dept == gb.DEPT_HR: cat = 'labor_hr'
-                elif dept == gb.DEPT_PR: cat = 'labor_pr'
-                elif dept == gb.DEPT_ACCOUNTING: cat = 'labor_accounting'
+                cat = dept_labor_map.get(npc['department'], 'labor')
                 
                 labor_costs[cat] = labor_costs.get(cat, 0) + weekly_salary
 
@@ -1587,3 +1572,80 @@ class Simulation:
                     INSERT INTO stock_history (week, company_id, stock_price, market_cap, eps, bps, per, pbr)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """, (week, cid, new_price, market_cap, eps, bps, real_per, real_pbr))
+
+    def get_financial_report(self, company_id, current_week, period='weekly', target=0):
+        """指定された期間の財務諸表(PL/BS)データを生成して返す"""
+        # デフォルトターゲットの設定
+        if target == 0:
+            if period == 'weekly':
+                target = max(1, current_week - 1)
+            elif period == 'quarterly':
+                current_q = (current_week - 1) // 13 + 1
+                target = max(1, current_q if (current_week - 1) % 13 != 0 else current_q - 1)
+            elif period == 'yearly':
+                current_y = (current_week - 1) // 52 + 1
+                target = max(1, current_y if (current_week - 1) % 52 != 0 else current_y - 1)
+
+        # 期間計算
+        start_week, end_week = 1, 1
+        label = ""
+        
+        if period == 'weekly':
+            start_week = end_week = target
+            y = 2025 + (target - 1) // 52
+            w = (target - 1) % 52 + 1
+            label = f"{y}年 Week {w}"
+        elif period == 'quarterly':
+            start_week = (target - 1) * 13 + 1
+            end_week = target * 13
+            y = 2025 + (target - 1) // 4
+            q = (target - 1) % 4 + 1
+            s_w = (start_week - 1) % 52 + 1
+            e_w = (end_week - 1) % 52 + 1
+            label = f"{y}年 第{q}四半期 (Week {s_w}-{e_w})"
+        elif period == 'yearly':
+            start_week = (target - 1) * 52 + 1
+            end_week = target * 52
+            y = 2025 + (target - 1)
+            label = f"{y}年 (第{target}期)"
+
+        # PL集計
+        entries = db.fetch_all("""
+            SELECT category, SUM(amount) as total 
+            FROM account_entries 
+            WHERE company_id = ? AND week BETWEEN ? AND ?
+            GROUP BY category
+        """, (company_id, start_week, end_week))
+        
+        pl = {k: 0 for k in ['revenue', 'cogs', 'gross_profit', 'labor', 'rent', 'ad', 'other_sga', 'operating_profit', 'interest', 'net_profit']}
+        for e in entries:
+            cat, amt = e['category'], int(e['total'])
+            if cat in pl: pl[cat] += amt
+            elif 'labor' in cat: pl['labor'] += amt
+            elif 'rent' in cat: pl['rent'] += amt
+        
+        pl['gross_profit'] = pl['revenue'] - pl['cogs']
+        total_sga = pl['labor'] + pl['rent'] + pl['ad'] + pl['other_sga']
+        pl['operating_profit'] = pl['gross_profit'] - total_sga
+        pl['net_profit'] = pl['operating_profit'] - pl['interest']
+        
+        # BS集計
+        company = db.fetch_one("SELECT funds FROM companies WHERE id = ?", (company_id,))
+        bs = {'cash': company['funds'], 'inventory': 0, 'fixed_assets': 0, 'total_assets': 0, 'debt': 0, 'equity': 0}
+        
+        # 在庫評価
+        inv_items = db.fetch_all("SELECT i.quantity, d.company_id as maker_id, d.parts_config, d.sales_price FROM inventory i JOIN product_designs d ON i.design_id = d.id WHERE i.company_id = ?", (company_id,))
+        for item in inv_items:
+            if item['maker_id'] == company_id:
+                p_conf = json.loads(item['parts_config']) if item['parts_config'] else {}
+                unit_cost = sum(p['cost'] for p in p_conf.values()) if p_conf else 0
+                bs['inventory'] += item['quantity'] * unit_cost
+            else:
+                bs['inventory'] += item['quantity'] * int(item['sales_price'] * 0.7)
+        
+        bs['fixed_assets'] = db.fetch_one("SELECT SUM(rent * 100) as val FROM facilities WHERE company_id = ? AND is_owned = 1", (company_id,))['val'] or 0
+        bs['total_assets'] = bs['cash'] + bs['inventory'] + bs['fixed_assets']
+        bs['debt'] = db.fetch_one("SELECT SUM(amount) as val FROM loans WHERE company_id = ?", (company_id,))['val'] or 0
+        bs['equity'] = bs['total_assets'] - bs['debt']
+        
+        return {'pl': pl, 'bs': bs, 'label': label, 'target': target, 'prev_target': target - 1 if target > 1 else None, 'next_target': target + 1}
