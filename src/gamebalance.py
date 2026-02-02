@@ -31,158 +31,57 @@ INDUSTRIES = {
         "price_markup_modifier": 1.0, # 標準マージン
         "sales_efficiency_base": 2.0, # 1人あたり週2台販売
         "stock_handling_coefficient": 0.1, # 在庫1台あたり0.1キャパ(営業)
-        "transaction_handling_coefficient": 20.0, # 取引1台あたり20キャパ(営業)
+        "transaction_handling_coefficient": 5.0, # 取引1台あたり20キャパ(営業)
         "development_difficulty": 1.0, # 開発難易度係数 (基準2000)
-        "categories": {
-            "sedan": {
-                "name": "セダン",
-                "base_demand": 600, # 週次需要
-                "production_efficiency_base": 0.27, # 1人週あたりの生産台数
-                "development_duration": 48, # 開発期間(週): 長め
-                "parts": [
-                    {"key": "engine", "label": "エンジン", "base_cost": 240000},
-                    {"key": "drive_parts", "label": "走行パーツ", "base_cost": 240000},
-                    {"key": "suspension", "label": "足回り", "base_cost": 180000},
-                    {"key": "safety", "label": "安全機器", "base_cost": 72000},
-                    {"key": "auxiliary", "label": "補機類", "base_cost": 48000},
-                    {"key": "body", "label": "車体", "base_cost": 240000},
-                    {"key": "interior", "label": "インテリア", "base_cost": 180000}
-                ]
-            },
-            "suv": {
-                "name": "SUV",
-                "base_demand": 1200,
-                "production_efficiency_base": 0.25,
-                "development_duration": 52,
-                "parts": [
-                    {"key": "engine_high_power", "label": "高出力エンジン", "base_cost": 350000},
-                    {"key": "drive_parts_awd", "label": "4WD走行パーツ", "base_cost": 300000},
-                    {"key": "suspension_heavy", "label": "強化足回り", "base_cost": 220000},
-                    {"key": "safety", "label": "安全機器", "base_cost": 80000},
-                    {"key": "auxiliary", "label": "補機類", "base_cost": 55000},
-                    {"key": "body_large", "label": "大型車体", "base_cost": 350000},
-                    {"key": "interior", "label": "インテリア", "base_cost": 200000}
-                ]
-            },
-            "compact": {
-                "name": "コンパクトカー",
-                "base_demand": 1500,
-                "production_efficiency_base": 0.35,
-                "development_duration": 40,
-                "parts": [
-                    {"key": "engine_small", "label": "小型エンジン", "base_cost": 150000},
-                    {"key": "drive_parts", "label": "走行パーツ", "base_cost": 180000},
-                    {"key": "suspension", "label": "足回り", "base_cost": 120000},
-                    {"key": "safety", "label": "安全機器", "base_cost": 60000},
-                    {"key": "auxiliary", "label": "補機類", "base_cost": 40000},
-                    {"key": "body_small", "label": "小型車体", "base_cost": 150000},
-                    {"key": "interior_simple", "label": "簡易インテリア", "base_cost": 100000}
-                ]
-            },
-            "sports": {
-                "name": "スポーツカー",
-                "base_demand": 200,
-                "production_efficiency_base": 0.20,
-                "development_duration": 60,
-                "parts": [
-                    {"key": "engine_sport", "label": "スポーツエンジン", "base_cost": 500000},
-                    {"key": "drive_parts_sport", "label": "スポーツ走行パーツ", "base_cost": 400000},
-                    {"key": "suspension_sport", "label": "スポーツ足回り", "base_cost": 300000},
-                    {"key": "safety", "label": "安全機器", "base_cost": 80000},
-                    {"key": "auxiliary", "label": "補機類", "base_cost": 60000},
-                    {"key": "body_aero", "label": "エアロ車体", "base_cost": 400000},
-                    {"key": "interior_sport", "label": "スポーツインテリア", "base_cost": 250000}
-                ]
-            }
-        }
+        "base_demand": 1000, # 週次需要
+        "production_efficiency_base": 0.27, # 1人週あたりの生産台数
+        "development_duration": 48, # 開発期間(週): 長め
+        "parts": [
+            {"key": "engine", "label": "エンジン", "base_cost": 240000},
+            {"key": "drive_parts", "label": "走行パーツ", "base_cost": 240000},
+            {"key": "suspension", "label": "足回り", "base_cost": 180000},
+            {"key": "safety", "label": "安全機器", "base_cost": 72000},
+            {"key": "auxiliary", "label": "補機類", "base_cost": 48000},
+            {"key": "body", "label": "車体", "base_cost": 240000},
+            {"key": "interior", "label": "インテリア", "base_cost": 180000}
+        ]
     },
-    "home_appliances": { # 新規追加
-        "name": "家電業界",
-        "price_markup_modifier": 0.6, # 薄利多売 (マージンを削る)
-        "sales_efficiency_base": 20.0, # 1人あたり週20台販売
-        "stock_handling_coefficient": 0.01, # 在庫1台あたり0.01キャパ
-        "transaction_handling_coefficient": 2.0, # 取引1台あたり2キャパ
-        "development_difficulty": 0.5, # 開発難易度半分 (基準1000)
-        "categories": {
-            # 家電業界全体で自動車の約10倍の需要(10,000台)になるようカテゴリで配分
-            "washing_machine": {
-                "name": "洗濯機",
-                "base_demand": 8000,
-                "production_efficiency_base": 5.0, # 自動車よりはるかに作りやすい
-                "development_duration": 13, # 要件: 3ヶ月 (13週)
-                "parts": [
-                    {"key": "motor", "label": "モーター", "base_cost": 5000},
-                    {"key": "casing", "label": "外装", "base_cost": 3000},
-                    {"key": "control_panel", "label": "操作パネル", "base_cost": 2000}
-                ]
-            },
-            "refrigerator": {
-                "name": "冷蔵庫",
-                "base_demand": 10000,
-                "production_efficiency_base": 4.0,
-                "development_duration": 16,
-                "parts": [
-                    {"key": "compressor", "label": "コンプレッサー", "base_cost": 8000},
-                    {"key": "casing_large", "label": "大型外装", "base_cost": 6000},
-                    {"key": "insulation", "label": "断熱材", "base_cost": 3000},
-                    {"key": "control_panel", "label": "操作パネル", "base_cost": 2000}
-                ]
-            },
-            "tv": {
-                "name": "テレビ",
-                "base_demand": 15000,
-                "production_efficiency_base": 6.0,
-                "development_duration": 12,
-                "parts": [
-                    {"key": "display_panel", "label": "液晶パネル", "base_cost": 15000},
-                    {"key": "circuit_board", "label": "基板", "base_cost": 5000},
-                    {"key": "casing_thin", "label": "薄型外装", "base_cost": 2000},
-                    {"key": "speakers", "label": "スピーカー", "base_cost": 1000}
-                ]
-            },
-            "ac": {
-                "name": "エアコン",
-                "base_demand": 7000,
-                "production_efficiency_base": 4.5,
-                "development_duration": 14,
-                "parts": [
-                    {"key": "compressor", "label": "コンプレッサー", "base_cost": 7000},
-                    {"key": "heat_exchanger", "label": "熱交換器", "base_cost": 4000},
-                    {"key": "fan", "label": "ファン", "base_cost": 1000},
-                    {"key": "casing", "label": "外装", "base_cost": 2000}
-                ]
-            },
-            "microwave": {
-                "name": "電子レンジ",
-                "base_demand": 9000,
-                "production_efficiency_base": 8.0,
-                "development_duration": 10,
-                "parts": [
-                    {"key": "magnetron", "label": "マグネトロン", "base_cost": 3000},
-                    {"key": "casing", "label": "外装", "base_cost": 2000},
-                    {"key": "control_panel", "label": "操作パネル", "base_cost": 1500},
-                    {"key": "turntable", "label": "ターンテーブル", "base_cost": 500}
-                ]
-            }
-        }
+    "pc": {
+        "name": "PC業界",
+        "base_demand": 5000,
+        "production_efficiency_base": 5.0,
+        "development_duration": 12,
+        "price_markup_modifier": 0.7,
+        "sales_efficiency_base": 10.0,
+        "stock_handling_coefficient": 0.02,
+        "transaction_handling_coefficient": 5.0,
+        "development_difficulty": 0.6,
+        "parts": [
+            {"key": "cpu", "label": "CPU", "base_cost": 30000},
+            {"key": "gpu", "label": "GPU", "base_cost": 40000},
+            {"key": "memory", "label": "メモリ", "base_cost": 10000},
+            {"key": "storage", "label": "ストレージ", "base_cost": 10000},
+            {"key": "motherboard", "label": "マザーボード", "base_cost": 15000},
+            {"key": "psu", "label": "電源ユニット", "base_cost": 8000},
+            {"key": "case", "label": "PCケース", "base_cost": 7000}
+        ]
     }
 }
 
 # デフォルト設定（後方互換用）
 DEFAULT_INDUSTRY = "automotive"
-DEFAULT_CATEGORY = "sedan"
 
 # 施設・賃料 (週次)
-RENT_OFFICE = 20000  # 1人あたり
-RENT_FACTORY = 12000 # 1人あたり
-RENT_STORE_BASE = 30000 # 1人あたり(Access B)
+RENT_OFFICE = 5000  # 1人あたり
+RENT_FACTORY = 3000 # 1人あたり
+RENT_STORE_BASE = 8000 # 1人あたり(Access B)
 FACILITY_UNIT_SIZE = 8 # 施設を借りる際の最小単位（人）
 FACILITY_PURCHASE_MULTIPLIER = 100 # 購入価格は週次賃料の100倍
 
 # 生産・業務効率
 BASE_PRODUCTION_EFFICIENCY = 0.27 # 台/NPC/週
 BASE_SALES_EFFICIENCY = 2 # 台/NPC/週 (店舗販売)
-HR_CAPACITY_PER_PERSON = 6 # 人事1人で管理できる人数
+HR_CAPACITY_PER_PERSON = 15 # 人事1人で管理できる人数
 
 # NPC能力関連
 ABILITY_MIN = 0

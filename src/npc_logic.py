@@ -12,9 +12,10 @@ class NPCLogic:
     def __init__(self, company_id, company_data=None, employees=None):
         self.company_id = company_id
         if company_data:
-            self.company = company_data
+            self.company = dict(company_data)
         else:
-            self.company = db.fetch_one("SELECT * FROM companies WHERE id = ?", (company_id,))
+            row = db.fetch_one("SELECT * FROM companies WHERE id = ?", (company_id,))
+            self.company = dict(row) if row else None
 
         if not self.company: 
             self.employees = []
@@ -30,6 +31,20 @@ class NPCLogic:
         self.divisions = db.fetch_all("SELECT * FROM divisions WHERE company_id = ?", (self.company_id,))
         
         self.phase = 'STABLE' # Default
+        
+        # 週次目標・計画データ (decide_weekly_targetsで設定)
+        self.plan = {
+            'target_production': {}, # {design_id: quantity}
+            'target_procurement': {}, # {design_id: quantity}
+            'required_capacity': {'production': 0, 'sales': 0, 'store': 0, 'development': 0},
+            'required_facility': {'factory': 0, 'store': 0, 'office': 0}
+        }
+        # レポート用統計データ
+        self.plan['stats'] = {
+            'current_share': 0.0,
+            'target_share': 0.0,
+            'target_sales': 0
+        }
 
     def _get_ceo_precision(self, stat_name):
         """
@@ -85,13 +100,20 @@ class NPCLogic:
         revenue = recent_pl['revenue'] or 0
         expenses = recent_pl['expenses'] or 0
         profit = revenue - expenses
+        profit_margin = profit / revenue if revenue > 0 else -1.0
 
         # フェーズ判定ロジック
+        # 修正: 資金が潤沢(固定費52週分以上)なら、赤字でもSTABLEを維持する (投資フェーズとみなす)
+        is_cash_rich = funds > (fixed_costs * 52)
+
         # CRISIS: 資金が固定費6週分未満、または借入余力がなく赤字
-        if (funds + credit_room) < (fixed_costs * 6) or (funds < fixed_costs * 4 and profit < 0):
+        # ただし、Cash RichならCRISISにはならない
+        if not is_cash_rich and ((funds + credit_room) < (fixed_costs * 6) or (funds < fixed_costs * 4 and profit < 0)):
             self.phase = 'CRISIS'
-        # GROWTH: 黒字かつ、資金に余裕がある (固定費12週分以上)
-        elif profit > 0 and funds > (fixed_costs * 12):
+        elif not is_cash_rich and profit < -fixed_costs: # 赤字額が固定費を超える(大赤字)なら資金があっても危機
+            self.phase = 'CRISIS'
+        # GROWTH: 利益率5%以上 かつ 資金に余裕がある (固定費12週分以上)
+        elif profit_margin > 0.05 and funds > (fixed_costs * 12):
             self.phase = 'GROWTH'
         else:
             self.phase = 'STABLE'
@@ -173,148 +195,273 @@ class NPCLogic:
                     db.execute_query("UPDATE npcs SET salary = ? WHERE id = ?", (new_salary, emp['id']))
                     db.log_file_event(current_week, self.company_id, "HR Salary", f"Increased salary for {emp['name']} to {new_salary}")
 
-    def decide_hiring(self, current_week, candidates_pool=None):
+    def decide_hiring(self, current_week, candidates_pool=None, all_caps=None):
         """
-        採用計画: 資金に余裕があり、従業員が不足していればオファーを出す
+        採用計画: 目標達成に必要なキャパシティと現状を比較し、不足分を採用する
         """
         if not self.company: return
         
-        # CRISISフェーズでは採用凍結
-        if self.phase == 'CRISIS': return
+        # 修正: CRISISフェーズでも、従業員が極端に少ない(3人未満)場合は採用を試みる (再建のため)
+        if self.phase == 'CRISIS' and len(self.employees) >= 3: return
+
+        # 採用枠の設定
+        max_offers = 3
+        if self.phase == 'GROWTH':
+            max_offers = 15
 
         # 既にオファーを出している件数を確認
         current_offers_cnt = db.fetch_one("SELECT COUNT(*) as cnt FROM job_offers WHERE company_id = ?", (self.company_id,))['cnt']
-        offers_to_make = 3 - current_offers_cnt
         
-        if offers_to_make <= 0: return
+        # 今回使える枠 (人事は別枠で追加可能とするため、ここではベース枠)
+        available_offers = max_offers - current_offers_cnt
+        if available_offers < 0: available_offers = 0
 
         # 今回のループでオファーを出したNPCのIDを記録（重複防止）
         offered_npc_ids = set()
         
-        # 1. 人事キャパシティと従業員数のチェック
+        # 候補者リストが渡されていない場合はDBから取得 (フォールバック)
+        if candidates_pool is None:
+            candidates_pool = db.fetch_all("SELECT * FROM npcs WHERE company_id IS NULL LIMIT 100")
+
+        # 自社に再雇用禁止期間中の候補者を除外
+        filtered_candidates = [
+            c for c in candidates_pool 
+            if c['last_company_id'] != self.company_id or (current_week - c['last_resigned_week']) >= gb.REHIRE_PROHIBITION_WEEKS
+        ]
+
+        # ---------------------------------------------------------
+        # 1. 人事部 (HR) の優先採用 (別枠判定)
+        # ---------------------------------------------------------
         hr_employees = [e for e in self.employees if e['department'] == gb.DEPT_HR]
         total_hr_power = sum([e['hr'] for e in hr_employees])
-        # 人事部が0人の場合でも最低限の採用活動ができるように補正
-        hr_capacity = max(total_hr_power * gb.HR_CAPACITY_PER_PERSON, 5) # HR_CAPACITY_PER_PERSON is per NPC? No, per person.
         
-        current_employees_count = len(self.employees)
+        # 供給キャパシティ (経営者補正込み)
+        hr_supply = (total_hr_power * gb.NPC_SCALE_FACTOR) + (50 * gb.NPC_SCALE_FACTOR)
         
-        # 採用ターゲット部署の決定
+        # 将来の増員を見越したHR需要予測 (現在の従業員数 + 最大採用数)
+        projected_employees_scaled = (len(self.employees) + max_offers) * gb.NPC_SCALE_FACTOR
+        projected_hr_demand = 50 * (projected_employees_scaled / gb.HR_CAPACITY_PER_PERSON)
+        
+        # 目標: 要求の1.2倍
+        target_hr_supply = projected_hr_demand * 1.2
+        
+        if hr_supply < target_hr_supply or not hr_employees:
+            # 不足キャパシティ
+            shortage_cap = target_hr_supply - hr_supply
+            # 必要人数 (能力50と仮定)
+            needed_hr = math.ceil(shortage_cap / (50 * gb.NPC_SCALE_FACTOR))
+            if needed_hr < 1: needed_hr = 1
+            
+            # 人事採用実行 (別枠として実行)
+            self._process_hiring_round(
+                current_week, gb.DEPT_HR, needed_hr, filtered_candidates, offered_npc_ids
+            )
+
+        # ---------------------------------------------------------
+        # 2. 通常採用 (事業計画に基づく)
+        # ---------------------------------------------------------
+        if available_offers <= 0: return
+
         target_dept = None
-        if current_employees_count >= hr_capacity * 0.9:
-            # キャパシティ限界に近い場合は人事部を優先
-            # Note: hr_capacity is raw number of people manageable. current_employees_count is NPCs.
-            # We need to compare scaled count.
-            if (current_employees_count * gb.NPC_SCALE_FACTOR) >= hr_capacity * 0.9:
-                target_dept = gb.DEPT_HR
-        else:
-            # 業態ごとの優先順位
+
+        # 販売効率の取得 (小売用) - キャパシティ単位合わせのため
+        sales_eff = 1.0
+        if self.company['type'] == 'npc_retail':
+             if self.company['industry'] in gb.INDUSTRIES:
+                sales_eff = gb.INDUSTRIES[self.company['industry']].get('sales_efficiency_base', gb.BASE_SALES_EFFICIENCY)
+
+        # 計画に基づく必要キャパシティとのギャップを埋める
+        if not target_dept:
+            # 現在のキャパシティ (all_capsから取得、なければ概算)
+            current_caps = all_caps.get(self.company_id, {}) if all_caps else {}
+            
+            # 各部門の不足率(Required/Current)を計算し、最も不足している部署を優先する
+            shortage_scores = {}
+
+            # 生産 (メーカーのみ)
             if self.company['type'] == 'npc_maker':
-                # メーカー: 生産 > 開発 > 営業
-                prod_count = len([e for e in self.employees if e['department'] == gb.DEPT_PRODUCTION])
-                if prod_count < 5: target_dept = gb.DEPT_PRODUCTION
-                elif prod_count < 10: target_dept = gb.DEPT_DEV
-                else: target_dept = gb.DEPT_SALES
+                req_prod = self.plan['required_capacity'].get('production', 0)
+                cur_prod = current_caps.get('production_capacity', 1)
+                if req_prod > cur_prod:
+                    shortage_scores[gb.DEPT_PRODUCTION] = req_prod / max(1, cur_prod)
+
+            # 店舗 (小売のみ)
+            if self.company['type'] == 'npc_retail':
+                # req_store は能力値ベース。sales_effを掛けてスループットベースに変換して比較
+                req_store_throughput = self.plan['required_capacity'].get('store', 0) * sales_eff
+                cur_store_throughput = current_caps.get('store_ops_capacity', 1)
+                if req_store_throughput > cur_store_throughput:
+                    shortage_scores[gb.DEPT_STORE] = req_store_throughput / max(0.1, cur_store_throughput)
+
+            # 営業
+            req_sales = self.plan['required_capacity'].get('sales', 0)
+            cur_sales = current_caps.get('sales_capacity', 1)
+            
+            # 小売の場合、営業人員が店舗人員を超えないように抑制するキャップ (店舗人員の50%まで)
+            if self.company['type'] == 'npc_retail':
+                store_emp_count = len([e for e in self.employees if e['department'] == gb.DEPT_STORE])
+                sales_emp_count = len([e for e in self.employees if e['department'] == gb.DEPT_SALES])
+                # 店舗人員が少ないうちは営業を増やしすぎない (最低2人は許容)
+                if sales_emp_count > max(2, store_emp_count * 0.5):
+                    req_sales = 0 # 採用抑制
+
+            if req_sales > cur_sales:
+                shortage_scores[gb.DEPT_SALES] = req_sales / max(1, cur_sales)
+
+            # 開発 (メーカーのみ)
+            if self.company['type'] == 'npc_maker':
+                req_dev = self.plan['required_capacity'].get('development', 0)
+                cur_dev = current_caps.get('development_capacity', 1)
+                if req_dev > cur_dev:
+                    shortage_scores[gb.DEPT_DEV] = req_dev / max(1, cur_dev)
+
+            # 最も不足度が高い部署を選択 (1.1倍以上の不足がある場合)
+            if shortage_scores:
+                best_dept = max(shortage_scores, key=shortage_scores.get)
+                if shortage_scores[best_dept] > 1.1:
+                    target_dept = best_dept
+
+        # フォールバック: キャパシティ充足率に基づく採用 (人数ではなく負荷で判断)
+        if not target_dept:
+            # 現在のキャパシティ (all_capsから取得、なければ概算)
+            current_caps = all_caps.get(self.company_id, {}) if all_caps else {}
+            
+            # 充足率 (Required / Current) を計算
+            utilization = {}
+            
+            # 各部門の負荷状況
+            req_prod = self.plan['required_capacity'].get('production', 0)
+            cur_prod = current_caps.get('production_capacity', 1)
+            if req_prod > 0: utilization[gb.DEPT_PRODUCTION] = req_prod / max(1, cur_prod)
+            
+            req_store = self.plan['required_capacity'].get('store', 0)
+            cur_store_throughput = current_caps.get('store_ops_capacity', 1)
+            # 修正: スループットベースで負荷率を計算
+            if req_store > 0: utilization[gb.DEPT_STORE] = (req_store * sales_eff) / max(0.1, cur_store_throughput)
+            
+            req_sales = self.plan['required_capacity'].get('sales', 0)
+            cur_sales = current_caps.get('sales_capacity', 1)
+            if req_sales > 0: utilization[gb.DEPT_SALES] = req_sales / max(1, cur_sales)
+            
+            req_dev = self.plan['required_capacity'].get('development', 0)
+            cur_dev = current_caps.get('development_capacity', 1)
+            if req_dev > 0: utilization[gb.DEPT_DEV] = req_dev / max(1, cur_dev)
+
+            # 業態ごとの採用候補
+            candidates = []
+            if self.company['type'] == 'npc_maker':
+                candidates = [gb.DEPT_PRODUCTION, gb.DEPT_DEV, gb.DEPT_SALES]
             elif self.company['type'] == 'npc_retail':
-                # 小売: 店舗 > 営業
-                store_count = len([e for e in self.employees if e['department'] == gb.DEPT_STORE])
-                total_count = len(self.employees)
-                # 従業員の8割以上は店舗スタッフであるべき
-                if store_count < total_count * 0.8: target_dept = gb.DEPT_STORE
-                else: target_dept = gb.DEPT_SALES
+                candidates = [gb.DEPT_STORE, gb.DEPT_SALES]
+            
+            # 最も逼迫している部署を探す
+            best_dept = None
+            max_util = 0
+            for d in candidates:
+                u = utilization.get(d, 0)
+                if u > max_util:
+                    max_util = u
+                    best_dept = d
+            
+            # 閾値判定: GROWTHなら0.7(余裕を持って採用), STABLEなら0.95(ギリギリまで粘る)
+            threshold = 0.7 if self.phase == 'GROWTH' else 0.95
+            
+            if best_dept and max_util > threshold:
+                target_dept = best_dept
         
         if not target_dept:
             target_dept = random.choice(gb.DEPARTMENTS)
 
+        if available_offers <= 0: return
+
+        # 通常採用実行
+        self._process_hiring_round(
+            current_week, target_dept, available_offers, filtered_candidates, offered_npc_ids
+        )
+
+    def _process_hiring_round(self, current_week, target_dept, count, candidates, offered_npc_ids):
+        """
+        指定された部署・人数分の採用オファー処理を行う
+        """
+        if count <= 0: return 0
+        
         # ターゲット業界の特定 (最初の事業部の業界とする)
         target_industry = self.divisions[0]['industry_key'] if self.divisions else 'automotive'
+        
+        # 人事担当者の能力取得
+        hr_employees = [e for e in self.employees if e['department'] == gb.DEPT_HR]
+        avg_hr = sum([e['hr'] for e in hr_employees]) / len(hr_employees) if hr_employees else 0
+        
+        # 人事能力による誤差範囲の計算
+        error_range = 40 - (36 * (min(100, avg_hr) / 100.0))
+        half_range = error_range / 2.0
+        
+        # CEOの判断精度
+        ceo_precision = self._get_ceo_precision('hr')
+        
+        offers_made = 0
+        
+        for _ in range(count):
+            # 予算チェック (年収の2倍程度の余裕があるか)
+            if self.company['funds'] < gb.BASE_SALARY_YEARLY * gb.NPC_SCALE_FACTOR * 2:
+                break
 
-        # GROWTHフェーズなら採用枠を増やす
-        if self.phase == 'GROWTH':
-            offers_to_make = min(5, offers_to_make + 2)
+            best_candidate = None
+            best_score = -1
 
-        # 2. 予算チェック (年収の2倍程度の余裕があるか)
-        if self.company['funds'] > gb.BASE_SALARY_YEARLY * gb.NPC_SCALE_FACTOR * 2:
-            # 人事能力による誤差範囲の計算
-            # 人事力100 -> 誤差4, 人事力0 -> 誤差40
-            avg_hr = sum([e['hr'] for e in hr_employees]) / len(hr_employees) if hr_employees else 0
-            error_range = 40 - (36 * (min(100, avg_hr) / 100.0))
-            half_range = error_range / 2.0
-            
-            # CEOの判断精度 (人事能力 + 役員適正)
-            ceo_precision = self._get_ceo_precision('hr')
-            
-            # 候補者リストが渡されていない場合はDBから取得 (フォールバック)
-            if candidates_pool is None:
-                candidates_pool = db.fetch_all("SELECT * FROM npcs WHERE company_id IS NULL LIMIT 100")
+            for cand in candidates:
+                # 今回のループで既にオファー済みならスキップ
+                if cand['id'] in offered_npc_ids:
+                    continue
 
-            # 自社に再雇用禁止期間中の候補者を除外
-            filtered_candidates = [
-                c for c in candidates_pool 
-                if c['last_company_id'] != self.company_id or (current_week - c['last_resigned_week']) >= gb.REHIRE_PROHIBITION_WEEKS
-            ]
+                # 能力値をファジー化して認知
+                perceived_stats = {}
+                for stat in ['production', 'development', 'sales', 'hr', 'store_ops']:
+                    perceived_stats[stat] = cand[stat] + random.uniform(-half_range, half_range)
 
-            # 最大3回まで繰り返し採用を試みる
-            for _ in range(offers_to_make):
-                best_candidate = None
-                best_score = -1
-
-                for cand in filtered_candidates:
-                    # 今回のループで既にオファー済みならスキップ
-                    if cand['id'] in offered_npc_ids:
-                        continue
-
-                    # 能力値をファジー化して認知
-                    # 毎回ランダムだと評価がぶれるので、週とIDでシード固定してもいいが、
-                    # ここでは「面接のたびに印象が変わる」としてランダムにする
-                    perceived_stats = {}
-                    for stat in ['production', 'development', 'sales', 'hr', 'store_ops']:
-                        perceived_stats[stat] = cand[stat] + random.uniform(-half_range, half_range)
-
-                    # 業界適性の取得
-                    apts = json.loads(cand['aptitudes']) if cand['aptitudes'] else {}
-                    apt_val = apts.get(target_industry, 0.1)
-                    
-                    # ターゲット部署の能力値 * 適性 で評価
-                    stat_val = 0
-                    if target_dept == gb.DEPT_PRODUCTION: stat_val = perceived_stats['production']
-                    elif target_dept == gb.DEPT_DEV: stat_val = perceived_stats['development']
-                    elif target_dept == gb.DEPT_SALES: stat_val = perceived_stats['sales']
-                    elif target_dept == gb.DEPT_HR: stat_val = perceived_stats['hr']
-                    elif target_dept == gb.DEPT_STORE: stat_val = perceived_stats['store_ops']
-                    else: stat_val = max(perceived_stats.values())
-                    
-                    # 適性を反映
-                    stat_val *= apt_val
-                    
-                    # ROI (能力/給与) でスコアリング
-                    # 相手の希望給与を見る
-                    desired = cand['desired_salary']
-                    if desired == 0: desired = cand['salary'] # 未設定なら前職給与
-                    if desired == 0: desired = gb.BASE_SALARY_YEARLY # それでもなければ基準値
-                    
-                    # コスパ計算のブレ: CEOの能力が低いと、実際のコスパを見誤る
-                    # 精度が高いほどブレ幅(noise_range)は小さい
-                    noise_range = 0.4 * (1.0 - ceo_precision) # 最大±40%
-                    evaluation_noise = random.uniform(1.0 - noise_range, 1.0 + noise_range)
-                    score = (stat_val / desired) * evaluation_noise
-                    
-                    if score > best_score:
-                        best_score = score
-                        best_candidate = cand
+                # 業界適性の取得
+                apts = json.loads(cand['aptitudes']) if cand['aptitudes'] else {}
+                apt_val = apts.get(target_industry, 0.1)
                 
-                if best_candidate:
-                    # オファー発行
-                    # 提示額は希望額通りとする（交渉ロジックは今後）
-                    offer_salary = best_candidate['desired_salary'] if best_candidate['desired_salary'] > 0 else gb.BASE_SALARY_YEARLY
-                    
-                    db.execute_query("INSERT INTO job_offers (week, company_id, npc_id, offer_salary, target_dept) VALUES (?, ?, ?, ?, ?)",
-                                     (current_week, self.company_id, best_candidate['id'], offer_salary, target_dept))
-                    
-                    db.log_file_event(current_week, self.company_id, "HR Hiring Offer", f"Offered {offer_salary} yen to {best_candidate['name']} (ID: {best_candidate['id']})")
-                    offered_npc_ids.add(best_candidate['id'])
-                else:
-                    break # 候補者がいなければ終了
+                # ターゲット部署の能力値 * 適性 で評価
+                stat_val = 0
+                if target_dept == gb.DEPT_PRODUCTION: stat_val = perceived_stats['production']
+                elif target_dept == gb.DEPT_DEV: stat_val = perceived_stats['development']
+                elif target_dept == gb.DEPT_SALES: stat_val = perceived_stats['sales']
+                elif target_dept == gb.DEPT_HR: stat_val = perceived_stats['hr']
+                elif target_dept == gb.DEPT_STORE: stat_val = perceived_stats['store_ops']
+                else: stat_val = max(perceived_stats.values())
+                
+                # 適性を反映
+                stat_val *= apt_val
+                
+                # ROI (能力/給与) でスコアリング
+                desired = cand['desired_salary']
+                if desired == 0: desired = cand['salary']
+                if desired == 0: desired = gb.BASE_SALARY_YEARLY
+                
+                noise_range = 0.4 * (1.0 - ceo_precision)
+                evaluation_noise = random.uniform(1.0 - noise_range, 1.0 + noise_range)
+                score = (stat_val / desired) * evaluation_noise
+                
+                if score > best_score:
+                    best_score = score
+                    best_candidate = cand
+            
+            if best_candidate:
+                # オファー発行
+                offer_salary = best_candidate['desired_salary'] if best_candidate['desired_salary'] > 0 else gb.BASE_SALARY_YEARLY
+                
+                db.execute_query("INSERT INTO job_offers (week, company_id, npc_id, offer_salary, target_dept) VALUES (?, ?, ?, ?, ?)",
+                                 (current_week, self.company_id, best_candidate['id'], offer_salary, target_dept))
+                
+                db.log_file_event(current_week, self.company_id, "HR Hiring Offer", f"Offered {offer_salary} yen to {best_candidate['name']} (ID: {best_candidate['id']}) for {target_dept}")
+                offered_npc_ids.add(best_candidate['id'])
+                offers_made += 1
+            else:
+                break # 候補者がいなければ終了
+        
+        return offers_made
 
     def decide_restructuring(self, current_week):
         """
@@ -322,6 +469,9 @@ class NPCLogic:
         """
         if self.phase != 'CRISIS': return
         
+        # 修正: 従業員数が少なすぎる場合(5人以下)は解雇しない (事業継続不能になるため)
+        if len(self.employees) <= 5: return
+
         # 従業員解雇 (能力が低く、給与が高い順)
         # 役員は除く
         candidates = [e for e in self.employees if e['role'] not in [gb.ROLE_CEO, gb.ROLE_CXO]]
@@ -337,15 +487,23 @@ class NPCLogic:
         
         scored_candidates.sort(key=lambda x: x[0], reverse=True)
         
-        # 1週間に最大1人解雇
-        target = scored_candidates[0][1]
-        # 解雇実行
-        db.execute_query("""
-            UPDATE npcs SET company_id = NULL, department = NULL, role = NULL, 
-            last_resigned_week = ?, last_company_id = ?, loyalty = 50 
-            WHERE id = ?
-        """, (current_week, self.company_id, target['id']))
-        db.log_file_event(current_week, self.company_id, "Restructuring", f"Fired {target['name']} to cut costs")
+        # 修正: 資金状況に応じて複数人解雇する
+        fixed_costs = self._calculate_weekly_fixed_costs()
+        weeks_left = self.company['funds'] / max(1, fixed_costs)
+        
+        fire_count = 1
+        if weeks_left < 4: fire_count = 5 # 資金ショート寸前なら大量解雇
+        elif weeks_left < 8: fire_count = 3
+        
+        targets = scored_candidates[:fire_count]
+        
+        for _, target in targets:
+            db.execute_query("""
+                UPDATE npcs SET company_id = NULL, department = NULL, role = NULL, 
+                last_resigned_week = ?, last_company_id = ?, loyalty = 50 
+                WHERE id = ?
+            """, (current_week, self.company_id, target['id']))
+            db.log_file_event(current_week, self.company_id, "Restructuring", f"Fired {target['name']} to cut costs")
 
     def decide_promotion(self, current_week):
         """
@@ -392,6 +550,182 @@ class NPCLogic:
                     db.execute_query("UPDATE npcs SET role = ? WHERE id = ?", (gb.ROLE_CXO, best['id']))
                     db.log_file_event(current_week, self.company_id, "HR Promotion", f"Promoted {best['name']} to CxO")
 
+    def decide_weekly_targets(self, current_week, designs, inventory, b2b_sales_history, market_total_sales_4w, economic_index, maker_stocks=None):
+        """
+        週次目標設定: シェア目標 -> 在庫目標 -> 生産/仕入目標 -> 必要キャパシティ算出
+        """
+        # 1. メーカーの生産目標設定
+        if self.company['type'] == 'npc_maker':
+            completed_designs = [d for d in designs if d['status'] == 'completed']
+            
+            # 市場環境
+            # 修正: 自業界のメーカーのみをカウントする
+            my_industry = self.company['industry']
+            maker_count = db.fetch_one("SELECT COUNT(*) as cnt FROM companies WHERE type IN ('player', 'npc_maker') AND is_active = 1 AND industry = ?", (my_industry,))['cnt']
+            maker_count = max(1, maker_count)
+            
+            # 修正: 自業界の市場規模（直近4週）を取得する
+            market_stats_res = db.fetch_one("""
+                SELECT SUM(w.b2b_sales) as total 
+                FROM weekly_stats w
+                JOIN companies c ON w.company_id = c.id
+                WHERE w.week >= ? AND c.industry = ?
+            """, (current_week - 4, my_industry))
+            industry_total_sales_4w = market_stats_res['total'] if market_stats_res and market_stats_res['total'] else 0
+
+            for design in completed_designs:
+                # 実績確認
+                sales_history_item = next((s for s in b2b_sales_history if s['seller_id'] == self.company_id and s['design_id'] == design['id']), None)
+                max_weekly_sales = sales_history_item['max_weekly'] if sales_history_item else 0
+                estimated_4w_sales = max_weekly_sales * 4 # 最高週販ベースで4週間分を推計
+                
+                # シェア計算
+                # 修正: 業界全体の売上で割る
+                current_share = estimated_4w_sales / industry_total_sales_4w if industry_total_sales_4w > 0 else 1.0 / maker_count
+                
+                # 目標シェア設定
+                brand_factor = max(0.5, min(2.0, self.company['brand_power'] / 50.0))
+                if current_share == 0:
+                    target_share = max(0.05, (1.0 / maker_count) * brand_factor)
+                else:
+                    growth_rate = 1.1 if self.phase == 'STABLE' else 1.3 if self.phase == 'GROWTH' else 0.95
+                    target_share = current_share * growth_rate
+                
+                target_share = min(0.5, max(0.01, target_share))
+
+                # レポート用に最大シェアを保持 (主力製品の数値を代表値とする)
+                if current_share > self.plan['stats']['current_share']:
+                    self.plan['stats']['current_share'] = current_share
+                    self.plan['stats']['target_share'] = target_share
+                
+                # 需要予測
+                trend_data = db.fetch_one("SELECT b2c_demand FROM market_trends WHERE industry_key = ? ORDER BY week DESC LIMIT 1", (my_industry,))
+                base_demand = trend_data['b2c_demand'] if trend_data else gb.INDUSTRIES[my_industry]['base_demand']
+                estimated_demand = base_demand * economic_index
+                
+                predicted_sales = estimated_demand * target_share
+                if self.phase == 'GROWTH':
+                    predicted_sales = max(predicted_sales, max_weekly_sales * 1.2)
+                
+                # 目標在庫
+                weeks_stock = 1 if self.phase == 'GROWTH' else 1 if self.phase == 'STABLE' else 1
+                target_stock = int(predicted_sales * weeks_stock)
+                
+                # 現在在庫
+                stock_item = next((inv for inv in inventory if inv['design_id'] == design['id']), None)
+                current_stock = stock_item['quantity'] if stock_item else 0
+                
+                # 必要生産数
+                needed = max(0, target_stock - current_stock)
+
+                # 生産平準化: 急激なゼロ生産を避ける (在庫が目標の1.5倍以内で、資金があるなら、最低限のラインを維持)
+                if needed == 0 and current_stock < target_stock * 1.5 and self.phase != 'CRISIS':
+                     needed = int(predicted_sales * 0.5)
+
+                self.plan['target_production'][design['id']] = needed
+                
+                # 必要生産キャパシティ加算 (台数 / 効率)
+                eff = design['production_efficiency'] if design['production_efficiency'] > 0 else 0.27
+                # 効率は「1人週あたりの台数」なので、必要人数 = 台数 / 効率
+                # キャパシティ値 = 人数 * SCALE_FACTOR
+                req_man_power = needed / eff
+                self.plan['required_capacity']['production'] += req_man_power * gb.NPC_SCALE_FACTOR
+
+        # 2. 小売の仕入目標設定
+        elif self.company['type'] == 'npc_retail':
+            # 市場のメーカー在庫から取り扱い候補を選定（簡易的に既存ロジックのスコアリング結果を想定）
+            # ここでは「販売目標」を立てる
+            
+            # 自社の販売キャパシティ（現状）
+            # 修正: 従業員数ではなく、実際の能力値合計を使用する
+            store_employees = [e for e in self.employees if e['department'] == gb.DEPT_STORE]
+            total_store_power = sum(e['store_ops'] for e in store_employees)
+            
+            # 業界ごとの販売効率を取得
+            my_industry = self.company['industry']
+            sales_eff = gb.BASE_SALES_EFFICIENCY
+            if my_industry in gb.INDUSTRIES:
+                sales_eff = gb.INDUSTRIES[my_industry].get('sales_efficiency_base', gb.BASE_SALES_EFFICIENCY)
+            
+            # 修正: 能力合計ベースでキャパシティを計算 (能力50を1人前とする)
+            # 従業員がいない場合は最低値(50)を仮定して計算し、採用を促す
+            base_power = total_store_power if total_store_power > 0 else 50
+            estimated_capacity = (base_power / 50.0) * gb.NPC_SCALE_FACTOR * sales_eff
+            
+            # 市場全体の需要から「あるべき販売数(Fair Share)」を推計
+            # 自分の業界・カテゴリの需要を取得
+            my_industry = self.company['industry']
+            target_demand = 0
+            trend_data = db.fetch_one("SELECT b2c_demand FROM market_trends WHERE industry_key = ? ORDER BY week DESC LIMIT 1", (my_industry,))
+            target_demand = trend_data['b2c_demand'] if trend_data else gb.INDUSTRIES[my_industry]['base_demand']
+            
+            # 修正: 自業界の小売のみをカウントする
+            retailer_count = db.fetch_one("SELECT COUNT(*) as cnt FROM companies WHERE type = 'npc_retail' AND is_active = 1 AND industry = ?", (my_industry,))['cnt']
+            fair_share_sales = (target_demand * economic_index) / max(1, retailer_count)
+
+            # 目標販売数
+            # 現在の能力ベースの成長と、市場ポテンシャルベースの目標の大きい方を採用する
+            # 修正: 成長目標を1.2倍にして、採用閾値(1.1倍)を超えるようにする
+            growth_target = estimated_capacity * 1.5 if self.phase == 'GROWTH' else estimated_capacity * 1.2
+            if self.phase == 'GROWTH':
+                # 成長期は、Fair Shareの120%まで目指す
+                target_sales = max(growth_target, fair_share_sales * 1.2)
+            else:
+                # 安定期でも、Fair Shareの80%までは目指す (以前は20%で低すぎたためボトルネックになっていた)
+                target_sales = max(growth_target, fair_share_sales * 0.8)
+            
+            # レポート用統計
+            self.plan['stats']['target_sales'] = int(target_sales)
+            self.plan['stats']['current_share'] = estimated_capacity / target_demand if target_demand > 0 else 0
+            self.plan['stats']['target_share'] = target_sales / target_demand if target_demand > 0 else 0
+
+            # 必要店舗キャパシティ
+            # 販売数 = キャパシティ * 効率係数(能力/50)
+            # 標準能力(50)と仮定して必要キャパを逆算
+            req_store_cap = target_sales / sales_eff
+            self.plan['required_capacity']['store'] = req_store_cap
+            
+            # 仕入目標数は decide_procurement で詳細に決めるが、ここでは総枠として保持
+            # 在庫目標: 販売目標の6週分
+            target_stock_total = target_sales * 6
+            current_stock_total = sum(i['quantity'] for i in inventory)
+            self.plan['target_procurement']['total'] = max(0, target_stock_total - current_stock_total)
+
+        # 3. 共通: 営業・開発・施設の必要量算出
+        
+        # 営業: 取引数予測に基づく
+        # メーカー: 生産数 = 出荷数と仮定
+        # 小売: 仕入数 + 販売数
+        if self.company['type'] == 'npc_maker':
+            tx_volume = sum(self.plan['target_production'].values())
+        else:
+            tx_volume = self.plan['target_procurement'].get('total', 0) + target_sales
+            
+        self.plan['required_capacity']['sales'] = tx_volume * gb.REQ_CAPACITY_SALES_TRANSACTION
+        
+        # 開発 (メーカーのみ)
+        if self.company['type'] == 'npc_maker' and self.phase != 'CRISIS':
+            # 常に1ラインは動かしたい
+            self.plan['required_capacity']['development'] = gb.REQ_CAPACITY_DEV_PROJECT
+
+        # 施設必要量
+        # 生産 -> 工場
+        # 必要キャパシティ / SCALE_FACTOR = 必要人数
+        req_prod_ppl = self.plan['required_capacity']['production'] / gb.NPC_SCALE_FACTOR
+        self.plan['required_facility']['factory'] = int(req_prod_ppl)
+        
+        # 店舗 -> 店舗
+        req_store_ppl = self.plan['required_capacity']['store'] / gb.NPC_SCALE_FACTOR
+        self.plan['required_facility']['store'] = int(req_store_ppl)
+        
+        # オフィス (営業 + 開発 + 本社機能)
+        req_sales_ppl = self.plan['required_capacity']['sales'] / gb.NPC_SCALE_FACTOR
+        req_dev_ppl = self.plan['required_capacity']['development'] / gb.NPC_SCALE_FACTOR
+        # 本社機能(HR/PR/Accounting)は全従業員の10%程度と仮定
+        total_emp_est = req_prod_ppl + req_store_ppl + req_sales_ppl + req_dev_ppl
+        req_admin_ppl = total_emp_est * 0.1
+        self.plan['required_facility']['office'] = int(req_sales_ppl + req_dev_ppl + req_admin_ppl)
+
     def decide_production(self, current_week, designs, inventory, b2b_sales_history, market_total_sales_4w, economic_index):
         """
         メーカー用: 生産計画
@@ -424,131 +758,37 @@ class NPCLogic:
         prod_employees.sort(key=lambda x: x['production'], reverse=True)
         effective_employees = prod_employees[:int(total_factory_size // gb.NPC_SCALE_FACTOR)]
 
-        total_capacity = 0
+        total_man_power = 0
         for emp in effective_employees:
-            # 能力50で基準効率(0.17台)が出る計算
-            total_capacity += (emp['production'] / 50.0) * gb.BASE_PRODUCTION_EFFICIENCY * gb.NPC_SCALE_FACTOR
+            # 能力50で1人分(1.0)の働き。これを設計書の効率と掛け合わせる。
+            total_man_power += (emp['production'] / 50.0) * gb.NPC_SCALE_FACTOR
         
         # この事業部の製品のみ対象
         div_designs = [d for d in designs if d['division_id'] == division['id']]
         
         for design in div_designs:
+            # 計画された生産数を使用
+            to_produce = self.plan['target_production'].get(design['id'], 0)
+            if to_produce <= 0: continue
+
             # キャパシティが1台分未満でも、確率的に1台作れるようにする（あるいは最低1台は作れるようにする）
-            if total_capacity <= 0.1: break
+            if total_man_power <= 0.1: break
 
             # 在庫確認
             stock_item = next((inv for inv in inventory if inv['design_id'] == design['id']), None)
             current_stock = stock_item['quantity'] if stock_item else 0
 
-            # --- 生産意思決定ロジックの高度化 ---
-            
-            # 1. 自社の直近4週間のB2B出荷実績
-            sales_history_item = next((s for s in b2b_sales_history if s['seller_id'] == self.company_id and s['design_id'] == design['id']), None)
-            total_sales_4w = sales_history_item['total'] if sales_history_item else 0
-            
-            # 2. 市場環境の把握
-            # アクティブなメーカー数
-            maker_count = db.fetch_one("SELECT COUNT(*) as cnt FROM companies WHERE type IN ('player', 'npc_maker') AND is_active = 1")['cnt']
-            maker_count = max(1, maker_count)
-            
-            # 3. シェア率と予測需要の算出
-            if market_total_sales_4w > 0:
-                current_share = total_sales_4w / market_total_sales_4w
-            else:
-                # 統計データがない初期は均等割と仮定
-                current_share = 1.0 / maker_count
-            
-            # 需要予測のブレ: CEOの生産能力と役員適正に依存
-            ceo_precision = self._get_ceo_precision('production')
-            error_range = 0.3 * (1.0 - ceo_precision) # 最大±30%
-            prediction_error = random.uniform(1.0 - error_range, 1.0 + error_range)
-            
-            # カテゴリ需要の取得
-            cat_key = design['category_key']
-            
-            # 市場トレンドから直近の需要を取得
-            trend_data = db.fetch_one("SELECT b2c_demand FROM market_trends WHERE category_key = ? ORDER BY week DESC LIMIT 1", (cat_key,))
-            if trend_data:
-                base_demand_val = trend_data['b2c_demand']
-            else:
-                # データがない場合は定義値から計算
-                base_demand_val = 1000 # fallback
-                for ind in gb.INDUSTRIES.values():
-                    if cat_key in ind['categories']:
-                        base_demand_val = ind['categories'][cat_key]['base_demand']
-                        break
-                base_demand_val = int(base_demand_val * economic_index)
-            
-            estimated_market_demand = base_demand_val * prediction_error
-            
-            # 目標シェア: 現状維持～微増を目指す (最低でも5%は確保しようとする)
-            # ブランド力による補正: 平均(50)より高ければ強気、低ければ弱気
-            brand_factor = max(0.5, min(2.0, self.company['brand_power'] / 50.0))
-            
-            if current_share == 0:
-                # 新規参入: 競合数で割ったシェア * ブランド力 * 0.5 (慎重に開始)
-                target_share = (1.0 / max(1, maker_count)) * brand_factor * 0.5
-            else:
-                # 既存: 現状 * 成長係数
-                growth_rate = 1.0 + (0.05 * brand_factor)
-                target_share = current_share * growth_rate
-            
-            # シェア上限キャップ (過剰生産防止)
-            target_share = min(0.4, max(0.01, target_share))
-            
-            # 予測週販
-            predicted_weekly_sales = estimated_market_demand * target_share
-            
-            # 利益率による生産意欲の補正 (Profit Margin Motivation)
-            # 利益率を計算
-            if design['parts_config']:
-                p_conf = json.loads(design['parts_config'])
-                material_cost = sum(p['cost'] for p in p_conf.values())
-            else:
-                material_cost = design['sales_price'] * 0.7 # Fallback estimate
-            
-            profit_margin = (design['sales_price'] - material_cost) / design['sales_price'] if design['sales_price'] > 0 else 0
-            # 利益率 20% を基準に、高ければ増産、低ければ減産 (0.5倍 ~ 1.5倍)
-            profit_factor = max(0.5, min(1.5, 1.0 + (profit_margin - 0.2) * 2.5))
-            
-            predicted_weekly_sales = int(predicted_weekly_sales * profit_factor)
-
-            # 4. 目標在庫の設定 (フェーズに応じて在庫水準を変える)
-            # STABLE: 4週分, CRISIS: 2週分, GROWTH: 6週分
-            weeks_stock = 4
-            if self.phase == 'CRISIS': weeks_stock = 2
-            elif self.phase == 'GROWTH': weeks_stock = 6
-            
-            target_stock = int(predicted_weekly_sales * weeks_stock)
-            
-            # 最低在庫保証 (不測の事態に備えて最低でも需要の数%程度は持つ)
-            min_stock = int(estimated_market_demand / maker_count * 0.25)
-            target_stock = max(target_stock, min_stock)
-            
-            # 最大在庫キャップ (市場総需要の50%を上限とする - 1社での抱え込み防止)
-            max_stock_cap = int(estimated_market_demand * 0.5)
-            target_stock = min(target_stock, max_stock_cap)
-
-            # 売れ行き不振時の生産抑制: 在庫があるのに直近4週で売れていないなら生産しない
-            # ただし、ゲーム開始直後(Week 8未満)は実績がなくて当然なのでスキップ
-            if current_week > 8 and current_stock > 10 and total_sales_4w == 0:
-                target_stock = 0
-            
-            if current_stock >= target_stock: continue
-            
-            needed = target_stock - current_stock
-            
             # 設計書の生産効率係数を適用
             design_eff = design['production_efficiency']
             
             # 生産可能数: キャパシティ * 効率
             # 端数は確率的に切り上げ (例: 9.8台作れる能力なら80%の確率で10台、20%で9台)
-            float_produce = total_capacity * design_eff
+            float_produce = total_man_power * design_eff
             max_produce = int(float_produce)
             if random.random() < (float_produce - max_produce):
                 max_produce += 1
             
-            to_produce = min(needed, max_produce)
+            to_produce = min(to_produce, max_produce)
             
             # 資金チェック (材料費)
             if design['parts_config']:
@@ -592,7 +832,7 @@ class NPCLogic:
                 
                 # キャパシティ消費 (簡易的に、この製品に全力を注いだ分を減算)
                 used_capacity = to_produce / design_eff if design_eff > 0 else 0
-                total_capacity -= used_capacity
+                total_man_power -= used_capacity
                 db.log_file_event(current_week, self.company_id, "Production", f"Produced {to_produce} units of {design['name']}")
                 db.increment_weekly_stat(current_week, self.company_id, 'production_ordered', to_produce)
                 db.increment_weekly_stat(current_week, self.company_id, 'production_completed', to_produce)
@@ -622,8 +862,8 @@ class NPCLogic:
         ceo_precision = self._get_ceo_precision('sales')
 
         # カテゴリ需要のキャッシュ (DBアクセス削減)
-        trends = db.fetch_all("SELECT category_key, b2c_demand FROM market_trends WHERE week = ?", (current_week - 1,))
-        demand_map = {t['category_key']: t['b2c_demand'] for t in trends}
+        trends = db.fetch_all("SELECT industry_key, b2c_demand FROM market_trends WHERE week = ?", (current_week - 1,))
+        demand_map = {t['industry_key']: t['b2c_demand'] for t in trends}
 
         # 商品スコアリング (コンセプト * ブランド / 価格)
         scored_items = []
@@ -631,8 +871,7 @@ class NPCLogic:
             # 業界チェック: 自社の業界に含まれるカテゴリの商品のみ対象とする
             my_industry = self.company['industry']
             if my_industry in gb.INDUSTRIES:
-                if item['category_key'] not in gb.INDUSTRIES[my_industry]['categories']:
-                    continue
+                pass # 業界一致は前提
 
             # 営業力による価格補正の計算
             # メーカーの営業力が高いと、仕入れ値が高くなる（値引きを引き出せない）
@@ -671,7 +910,7 @@ class NPCLogic:
             margin_score = max(0.1, 1.0 + (retail_margin - 0.1) * 5.0)
 
             # カテゴリ需要 (Category Demand)
-            cat_demand = demand_map.get(item['category_key'], 1000)
+            cat_demand = demand_map.get(my_industry, 1000)
             # 需要1000を基準に正規化 (対数で緩やかに)
             demand_score = math.log10(max(10, cat_demand)) / 3.0 # log10(1000)=3 -> 1.0
             
@@ -686,11 +925,37 @@ class NPCLogic:
         scored_items.sort(key=lambda x: x['score'], reverse=True)
 
         # --- 仕入れロジック改善 ---
-        # 1. 自社の販売キャパシティと現在庫の確認 (my_capabilitiesは事前計算済み)
+        # 1. 販売予測に基づく目標在庫設定
         sales_capacity = my_capabilities['store_throughput']
         
-        # 2. 目標在庫の設定 (販売キャパシティの6週分 - 機会損失を防ぐため多めに確保)
-        target_stock_total = sales_capacity * 6
+        # 直近4週のB2C販売実績を取得（実需の把握）
+        sales_history = db.fetch_one("SELECT COUNT(*) as cnt FROM transactions WHERE seller_id = ? AND type = 'b2c' AND week >= ?", (self.company_id, current_week - 4))
+        avg_weekly_sales = sales_history['cnt'] / 4.0 if sales_history else 0
+        
+        # 市場全体の需要から「あるべき販売数」を推計 (負のスパイラル脱却用)
+        my_industry = self.company['industry']
+        retailer_count = db.fetch_one("SELECT COUNT(*) as cnt FROM companies WHERE type = 'npc_retail' AND is_active = 1 AND industry = ?", (my_industry,))['cnt']
+        retailer_count = max(1, retailer_count)
+        
+        # 自社が扱っているカテゴリの総需要を取得 (簡易的にdemand_mapの平均を使用)
+        avg_market_demand = sum(demand_map.values()) / max(1, len(demand_map)) if demand_map else 1000
+        fair_share_sales = avg_market_demand / retailer_count
+
+        # 予測販売数: 実績の1.2倍 または キャパシティの50%（初期）
+        if current_week > 8:
+            # 実績ベース と 潜在シェアベース の大きい方を採用 (売れてないときも強気に仕入れる)
+            # 修正: Fair Shareの80%を下限とする (以前は50%)
+            base_projection = max(avg_weekly_sales * 1.2, fair_share_sales * 0.8, 10)
+            if self.phase == 'GROWTH': base_projection *= 1.5
+            
+            # キャパシティ制限: 成長期はキャパシティを超えても仕入れる（採用が追いつくことを見越す）
+            cap_limit = sales_capacity * 1.5 if self.phase == 'GROWTH' else sales_capacity
+            projected_sales = min(base_projection, cap_limit)
+        else:
+            projected_sales = sales_capacity * 0.5
+            
+        # 2. 目標在庫の設定 (予測販売数の6週分)
+        target_stock_total = int(projected_sales * 6)
         current_total_stock = sum(inv['quantity'] for inv in my_inventory)
         
         # 3. 発注残の考慮
@@ -774,56 +1039,26 @@ class NPCLogic:
             # サプライヤー選択
             # 事業部の業界・カテゴリ定義を取得
             ind_key = division['industry_key']
-            
-            # カテゴリ選定: 需給バランスと利益率に基づいて選定
-            categories = gb.INDUSTRIES[ind_key]['categories']
+            ind_def = gb.INDUSTRIES[ind_key]
             
             # 市場トレンド（需要）の取得
-            trends = db.fetch_all("SELECT category_key, b2c_demand FROM market_trends WHERE week = ?", (current_week - 1,))
-            demand_map = {t['category_key']: t['b2c_demand'] for t in trends}
+            trends = db.fetch_one("SELECT b2c_demand FROM market_trends WHERE week = ? AND industry_key = ?", (current_week - 1, ind_key))
+            demand = trends['b2c_demand'] if trends else ind_def['base_demand']
             
             # 競合製品数（供給）の取得
-            supply_counts = db.fetch_all("SELECT category_key, COUNT(*) as cnt FROM product_designs WHERE status = 'completed' GROUP BY category_key")
-            supply_map = {s['category_key']: s['cnt'] for s in supply_counts}
+            supply_counts = db.fetch_one("SELECT COUNT(*) as cnt FROM product_designs WHERE status = 'completed' AND industry_key = ?", (ind_key,))
+            supply = supply_counts['cnt'] if supply_counts else 0
             
             # 平均価格の取得（利益率計算用）
-            avg_prices = db.fetch_all("SELECT category_key, AVG(sales_price) as avg_price FROM product_designs WHERE status = 'completed' GROUP BY category_key")
-            price_map = {p['category_key']: p['avg_price'] for p in avg_prices}
+            # avg_prices = db.fetch_one("SELECT AVG(sales_price) as avg_price FROM product_designs WHERE status = 'completed' AND industry_key = ?", (ind_key,))
+            # mkt_price = avg_prices['avg_price'] if avg_prices and avg_prices['avg_price'] else 0
 
-            cat_keys = []
-            weights = []
-
-            for k, cat_def in categories.items():
-                # 1. 需給バランス (Demand / Supply)
-                demand = demand_map.get(k, cat_def['base_demand'])
-                supply = supply_map.get(k, 0)
-                # 供給が少ないほどチャンス。供給0ならボーナス(0.5で割る=2倍)。
-                supply_factor = max(0.5, supply) 
-                supply_demand_ratio = demand / supply_factor
-                
-                # 2. 推定利益率
-                est_cost = sum(p['base_cost'] for p in cat_def['parts'])
-                mkt_price = price_map.get(k, est_cost * 2.0) # 市場価格がない場合は原価の2倍と仮定（初期参入のインセンティブ）
-                
-                profit_margin = (mkt_price - est_cost) / mkt_price if mkt_price > 0 else 0
-                # 利益率が高いほどスコアアップ。赤字(マイナス)の場合は極小スコア。
-                profit_factor = max(0.01, profit_margin)
-
-                # 総合スコア
-                score = supply_demand_ratio * profit_factor
-                
-                cat_keys.append(k)
-                weights.append(score)
-            
-            if not cat_keys: return
-
-            cat_key = random.choices(cat_keys, weights=weights, k=1)[0]
-            cat_def = categories[cat_key]
+            # カテゴリ選定ロジック削除 -> 業界固定
             
             parts_config = {}
             total_score = 0
             total_cost = 0
-            parts_def = cat_def['parts']
+            parts_def = ind_def['parts']
             
             # 経営方針に基づくサプライヤー選定基準
             # luxury: 品質重視 (score高い順)
@@ -879,9 +1114,9 @@ class NPCLogic:
             # base_price, sales_price は完成時に確定するため仮置き
             db.execute_query("""
                 INSERT INTO product_designs
-                (company_id, division_id, category_key, name, material_score, concept_score, production_efficiency, base_price, sales_price, status, strategy, developed_week, parts_config)
+                (company_id, division_id, industry_key, name, material_score, concept_score, production_efficiency, base_price, sales_price, status, strategy, developed_week, parts_config)
                 VALUES (?, ?, ?, ?, ?, 0, 0, 0, 0, 'developing', ?, ?, ?)
-            """, (self.company_id, division['id'], cat_key, name, avg_material_score, strategy, current_week, json.dumps(parts_config)))
+            """, (self.company_id, division['id'], ind_key, name, avg_material_score, strategy, current_week, json.dumps(parts_config)))
             db.log_file_event(current_week, self.company_id, "Development Start", f"Started development of {name}")
             db.increment_weekly_stat(current_week, self.company_id, 'development_ordered', 1)
 
@@ -889,6 +1124,7 @@ class NPCLogic:
         """
         メーカー用: 受注処理
         届いている注文を確認し、在庫があれば受注(Accepted)する
+        修正: 在庫不足時は部分納品を行う
         """
         if self.company['type'] != 'npc_maker': return
 
@@ -903,23 +1139,34 @@ class NPCLogic:
             
             item = inv_dict.get(did)
             
-            if item and item['quantity'] >= qty:
-                # 受注可能
-                db.execute_query("UPDATE b2b_orders SET status = 'accepted' WHERE id = ?", (order['id'],))
-                # メモリ上の在庫を即座に減らす
-                # これにより、後続の decide_production が「在庫が減った」ことを認識して生産できるようになる
-                item['quantity'] -= qty
+            if item and item['quantity'] > 0:
+                # 部分納品対応
+                fulfill_qty = min(qty, item['quantity'])
                 
-                db.log_file_event(current_week, self.company_id, "B2B Accept", f"Accepted Order ID {order['id']} ({qty} units)")
+                # 金額の再計算 (単価 * 納品数)
+                unit_price = order['amount'] / qty if qty > 0 else 0
+                new_amount = int(unit_price * fulfill_qty)
+
+                # 注文情報を更新して受注
+                if fulfill_qty < qty:
+                    db.execute_query("UPDATE b2b_orders SET quantity = ?, amount = ?, status = 'accepted' WHERE id = ?", 
+                                     (fulfill_qty, new_amount, order['id']))
+                    db.log_file_event(current_week, self.company_id, "B2B Partial Accept", f"Partially Accepted Order ID {order['id']} ({fulfill_qty}/{qty} units)")
+                else:
+                    db.execute_query("UPDATE b2b_orders SET status = 'accepted' WHERE id = ?", (order['id'],))
+                    db.log_file_event(current_week, self.company_id, "B2B Accept", f"Accepted Order ID {order['id']} ({qty} units)")
+                
+                # メモリ上の在庫を即座に減らす
+                item['quantity'] -= fulfill_qty
+                
             else:
-                # 在庫不足のため拒否 (または部分納品だが今回は拒否)
-                # 待たせるとキリがないので即拒否
+                # 在庫ゼロのため拒否
                 db.execute_query("UPDATE b2b_orders SET status = 'rejected' WHERE id = ?", (order['id'],))
-                db.log_file_event(current_week, self.company_id, "B2B Reject", f"Rejected Order ID {order['id']} (Insufficient Stock)")
+                db.log_file_event(current_week, self.company_id, "B2B Reject", f"Rejected Order ID {order['id']} (No Stock)")
 
     def decide_facilities(self, current_week):
         """
-        施設管理: 従業員数に合わせて施設を確保する
+        施設管理: 従業員数に合わせて施設を確保する。過剰な場合は解約する。
         """
         # 部署ごとの従業員数を集計
         if not self.employees: return
@@ -929,43 +1176,74 @@ class NPCLogic:
             d = emp['department']
             dept_counts[d] = dept_counts.get(d, 0) + 1
 
-        # 必要な施設タイプと人数
+        # 必要な施設タイプと人数 (計画ベース)
+        plan_factory = self.plan['required_facility'].get('factory', 0)
+        plan_store = self.plan['required_facility'].get('store', 0)
+        plan_office = self.plan['required_facility'].get('office', 0)
+
+        # 現在の従業員を収容するのに最低限必要なサイズ (現状ベース)
         # 工場: 生産部
-        factory_needs = dept_counts.get(gb.DEPT_PRODUCTION, 0)
+        curr_factory = dept_counts.get(gb.DEPT_PRODUCTION, 0)
         # 店舗: 店舗部
-        store_needs = dept_counts.get(gb.DEPT_STORE, 0)
-        # オフィス: その他全員
-        office_needs = len(self.employees) - factory_needs - store_needs
+        curr_store = dept_counts.get(gb.DEPT_STORE, 0)
+        # オフィス: その他全員 (生産・店舗以外)
+        curr_office = sum(count for d, count in dept_counts.items() if d not in [gb.DEPT_PRODUCTION, gb.DEPT_STORE])
+
+        # 拡張判断用: 現在の人員数のみに基づく (施設は即時確保できるため、先行投資しない)
+        factory_needs_acquire = curr_factory
+        store_needs_acquire = curr_store
+        office_needs_acquire = curr_office
+
+        # 縮小判断用: 計画と現状の大きい方 (将来の計画があるなら維持する)
+        factory_needs_keep = max(plan_factory, curr_factory)
+        store_needs_keep = max(plan_store, curr_store)
+        office_needs_keep = max(plan_office, curr_office)
 
         # CRISIS時は拡張しない
         if self.phase == 'CRISIS': return
 
         # 現在の施設容量を確認
-        facilities = db.fetch_all("SELECT type, size FROM facilities WHERE company_id = ?", (self.company_id,))
+        facilities = db.fetch_all("SELECT id, type, size, rent, is_owned FROM facilities WHERE company_id = ?", (self.company_id,))
         current_cap = {'factory': 0, 'store': 0, 'office': 0}
+        owned_facilities = {'factory': [], 'store': [], 'office': []}
+        rented_facilities = {'factory': [], 'store': [], 'office': []}
+
         for fac in facilities:
             if fac['type'] in current_cap:
                 current_cap[fac['type']] += fac['size']
+                if fac['is_owned']:
+                    owned_facilities[fac['type']].append(fac)
+                else:
+                    rented_facilities[fac['type']].append(fac)
         
         # ターゲット事業部 (NPCは単一事業部と仮定)
         target_div_id = self.divisions[0]['id'] if self.divisions else None
 
         # 不足分を計算して契約 (賃貸)
-        def acquire_facility(ftype, needed, current, rent_unit_price):
-            if needed > current:
-                shortage = needed - current
+        def acquire_facility(ftype, needed_raw, current, rent_unit_price):
+            needed_scaled = needed_raw * gb.NPC_SCALE_FACTOR
+            # 余裕を持たせる (1.2倍)
+            target_cap = int(needed_scaled * 1.2)
+            
+            if target_cap > current:
+                shortage = target_cap - current
                 
-                # 空き物件を探す (不足分を満たす最小の物件)
-                available = db.fetch_one("""
+                # 空き物件を探す (不足分を埋めるために、大きい順に取得して埋めていく)
+                # 修正: 1つの物件で満たそうとせず、複数の物件を組み合わせる
+                available_list = db.fetch_all("""
                     SELECT id, rent, size FROM facilities 
-                    WHERE company_id IS NULL AND type = ? AND size >= ? 
-                    ORDER BY rent ASC LIMIT 1
-                """, (ftype, shortage))
+                    WHERE company_id IS NULL AND type = ? 
+                    ORDER BY size DESC, rent ASC
+                """, (ftype,))
                 
-                if available:
+                for available in available_list:
+                    if shortage <= 0: break
+
                     # 購入判断: 資金に余裕があれば購入する
                     # 施設割り当て: NPCは単一事業部制を基本とするため、すべての施設をターゲット事業部に割り当てる
                     assign_div_id = target_div_id
+                    # オフィスは全社共通(Corporate)として割り当てることで、人事部等のスペースを確保する
+                    if ftype == 'office': assign_div_id = None
 
                     # 余裕基準: 購入後も資金が1億円以上残る
                     purchase_price = available['rent'] * gb.FACILITY_PURCHASE_MULTIPLIER
@@ -977,16 +1255,46 @@ class NPCLogic:
                         db.execute_query("UPDATE companies SET funds = funds - ? WHERE id = ?", (purchase_price, self.company_id))
                         db.execute_query("INSERT INTO account_entries (week, company_id, category, amount) VALUES (?, ?, 'facility_purchase', ?)",
                                          (current_week, self.company_id, purchase_price))
+                        
+                        # メモリ上の資金も更新して、ループ内の次回の判定に反映させる (過剰購入防止)
+                        self.company['funds'] -= purchase_price
+                        
                         db.log_file_event(current_week, self.company_id, "Facility", f"Purchased {ftype} (Size: {available['size']})")
                     else:
                         # 賃貸
                         db.execute_query("UPDATE facilities SET company_id = ?, division_id = ?, is_owned = 0 WHERE id = ?", 
                                          (self.company_id, assign_div_id, available['id']))
                         db.log_file_event(current_week, self.company_id, "Facility", f"Rented {ftype} (Size: {available['size']})")
+                    
+                    shortage -= available['size']
 
-        acquire_facility('factory', factory_needs * gb.NPC_SCALE_FACTOR, current_cap['factory'], gb.RENT_FACTORY)
-        acquire_facility('store', store_needs * gb.NPC_SCALE_FACTOR, current_cap['store'], gb.RENT_STORE_BASE)
-        acquire_facility('office', office_needs * gb.NPC_SCALE_FACTOR, current_cap['office'], gb.RENT_OFFICE)
+        acquire_facility('factory', factory_needs_acquire, current_cap['factory'], gb.RENT_FACTORY)
+        acquire_facility('store', store_needs_acquire, current_cap['store'], gb.RENT_STORE_BASE)
+        acquire_facility('office', office_needs_acquire, current_cap['office'], gb.RENT_OFFICE)
+
+        # 2. 縮小ロジック (過剰分を解約)
+        # 稼働率が50%を下回る場合、賃貸物件を解約する
+        def release_facility(ftype, needed_raw, current, rented_list):
+            needed_scaled = needed_raw * gb.NPC_SCALE_FACTOR
+            # 許容範囲 (必要量の1.5倍までは保持)
+            max_keep_cap = int(needed_scaled * 1.5)
+            
+            if current > max_keep_cap and rented_list:
+                # 解約候補: サイズが大きい順に解約を検討（一気に減らす）
+                rented_list.sort(key=lambda x: x['size'], reverse=True)
+                
+                excess = current - max_keep_cap
+                
+                for fac in rented_list:
+                    if excess >= fac['size'] * 0.8: # 8割以上過剰なら解約
+                        db.execute_query("UPDATE facilities SET company_id = NULL, division_id = NULL, is_owned = 0 WHERE id = ?", (fac['id'],))
+                        db.log_file_event(current_week, self.company_id, "Facility Release", f"Released {ftype} (Size: {fac['size']})")
+                        excess -= fac['size']
+                        if excess <= 0: break
+
+        release_facility('factory', factory_needs_keep, current_cap['factory'], rented_facilities['factory'])
+        release_facility('store', store_needs_keep, current_cap['store'], rented_facilities['store'])
+        release_facility('office', office_needs_keep, current_cap['office'], rented_facilities['office'])
 
     def decide_advertising(self, current_week):
         """
@@ -994,8 +1302,17 @@ class NPCLogic:
         """
         if self.phase == 'CRISIS': return
 
-        # 予算: 資金の2% または 5000万円 の小さい方 (過剰投資防止)
-        budget = min(self.company['funds'] * 0.02, 50000000)
+        # 予算設定の適正化: 売上高連動型へ変更
+        # 直近の売上を取得 (簡易的にaccount_entriesから)
+        recent_revenue_row = db.fetch_one("SELECT SUM(amount) as val FROM account_entries WHERE company_id = ? AND category = 'revenue' AND week = ?", (self.company_id, current_week - 1))
+        recent_revenue = recent_revenue_row['val'] if recent_revenue_row and recent_revenue_row['val'] else 0
+        
+        # 基本予算: 売上の10%。売上がない場合は手持ち資金の0.5%または200万円の小さい方（最低限の露出維持）
+        if recent_revenue > 0:
+            budget = min(recent_revenue * 0.10, self.company['funds'] * 0.05, 50000000)
+        else:
+            budget = min(self.company['funds'] * 0.005, 2000000)
+            
         if budget < gb.AD_COST_UNIT: return
 
         # 広報能力計算
@@ -1061,12 +1378,12 @@ class NPCLogic:
                 
                 # 直近4週間のB2B売上数
                 sales_history_item = next((s for s in b2b_sales_history if s['seller_id'] == self.company_id and s['design_id'] == p['id']), None)
-                sales_qty_4w = sales_history_item['total'] if sales_history_item else 0
-                avg_sales_qty = sales_qty_4w / 4.0
+                max_weekly_sales = sales_history_item['max_weekly'] if sales_history_item else 0
+                # avg_sales_qty = sales_qty_4w / 4.0 -> max_weekly_sales を基準にする
                 
                 # 競合価格の調査
-                cat_key = p['category_key']
-                competitor_prices = db.fetch_all("SELECT sales_price FROM product_designs WHERE category_key = ? AND status='completed' AND company_id != ?", (cat_key, self.company_id))
+                ind_key = p['industry_key']
+                competitor_prices = db.fetch_all("SELECT sales_price FROM product_designs WHERE industry_key = ? AND status='completed' AND company_id != ?", (ind_key, self.company_id))
                 if competitor_prices:
                     avg_market_price = sum(c['sales_price'] for c in competitor_prices) / len(competitor_prices)
                 else:
@@ -1084,7 +1401,7 @@ class NPCLogic:
 
                 # ロジック: 在庫過多なら値下げ、品薄なら値上げ
                 # さらに市場価格との乖離も考慮する
-                if current_qty > overstock_threshold and avg_sales_qty < (5 * patience):
+                if current_qty > overstock_threshold and max_weekly_sales < (5 * patience):
                     # 在庫過多
                     # 基準価格(base_price)が原価ではないので、parts_configから原価を計算
                     p_conf = json.loads(p['parts_config']) if p['parts_config'] else {}
@@ -1111,7 +1428,7 @@ class NPCLogic:
                     proposed_price = int(p['sales_price'] * (1.0 - drop_rate * random.uniform(0.8, 1.2)))
                     new_price = max(min_price, proposed_price)
                     
-                elif current_qty < shortage_threshold and avg_sales_qty > (10 / patience):
+                elif current_qty < shortage_threshold and max_weekly_sales > (10 / patience):
                     # 品薄・好調
                     # 市場価格より安いなら、市場価格に近づける（利益確保）
                     # 高級ブランドは強気に値上げする

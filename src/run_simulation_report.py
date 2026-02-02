@@ -337,5 +337,54 @@ def run_report():
     except Exception as e:
         print(f"Error exporting P/L detailed report: {e}")
 
+    # ボトルネック分析レポート出力
+    bottleneck_output_path = os.path.join(os.path.dirname(__file__), "..", "simulation_bottleneck_report.csv")
+    print(f"Exporting Bottleneck Analysis report to {bottleneck_output_path}...")
+
+    try:
+        logs = db.fetch_all("SELECT * FROM bottleneck_logs ORDER BY week, company_id")
+        
+        if logs:
+            with open(bottleneck_output_path, 'w', newline='', encoding='utf-8-sig') as f:
+                fieldnames = [
+                    "week", "company_id", "industry", "type", "phase", 
+                    "funds", "market_cap", "revenue", "expenses", "profit",
+                    "current_share", "target_share", 
+                    "target_production", "production_count", "production_capacity", 
+                    "target_sales", "sales_count", "sales_capacity", 
+                    "req_facility_div", "cap_facility_div", 
+                    "req_hr", "cap_hr", 
+                    "req_facility_common", "cap_facility_common",
+                    "emp_production", "emp_sales", "emp_development", 
+                    "emp_hr", "emp_pr", "emp_accounting", "emp_store"
+                ]
+                
+                # 日本語ヘッダー
+                header_map = {
+                    "week": "週", "company_id": "企業ID", "industry": "業界", "type": "区分", "phase": "フェーズ",
+                    "funds": "現金残高", "market_cap": "時価総額", "revenue": "売上", "expenses": "支出", "profit": "収支",
+                    "current_share": "現状シェア", "target_share": "シェア目標",
+                    "target_production": "生産目標", "production_count": "生産数", "production_capacity": "生産キャパ",
+                    "target_sales": "販売目標", "sales_count": "販売数", "sales_capacity": "販売キャパ",
+                    "req_facility_div": "事業部施設要求", "cap_facility_div": "事業部施設キャパ",
+                    "req_hr": "人事要求値", "cap_hr": "人事キャパ",
+                    "req_facility_common": "共通施設要求", "cap_facility_common": "共通施設キャパ",
+                    "emp_production": "生産人員", "emp_sales": "営業人員", "emp_development": "開発人員",
+                    "emp_hr": "人事人員", "emp_pr": "広報人員", "emp_accounting": "経理人員", "emp_store": "店舗人員"
+                }
+                
+                writer = csv.DictWriter(f, fieldnames=[header_map[k] for k in fieldnames])
+                writer.writeheader()
+                
+                for log in logs:
+                    row = dict(log)
+                    writer.writerow({header_map[k]: row[k] for k in fieldnames})
+            print("Bottleneck Analysis report generation completed successfully.")
+        else:
+            print("No bottleneck logs available.")
+            
+    except Exception as e:
+        print(f"Error exporting Bottleneck Analysis report: {e}")
+
 if __name__ == "__main__":
     run_report()

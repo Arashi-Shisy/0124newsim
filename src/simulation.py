@@ -110,7 +110,8 @@ class Simulation:
             if e['role'] == gb.ROLE_MANAGER: managers.append(e)
             if e['role'] in [gb.ROLE_CXO, gb.ROLE_CEO]: cxos.append(e)
             
-            if e['role'] in [gb.ROLE_CXO, gb.ROLE_CEO]: continue # 役員は現場人員に含めない
+            # 修正: 役員も現場人員に含める (プレイングマネージャーとして機能させる)
+            # if e['role'] in [gb.ROLE_CXO, gb.ROLE_CEO]: continue 
             
             if d in corp_depts:
                 corp_staff[d].append(e)
@@ -123,6 +124,9 @@ class Simulation:
         corp_efficiency = 1.0
         if total_corp_staff > caps_limit['office'] and total_corp_staff > 0:
             corp_efficiency = caps_limit['office'] / total_corp_staff
+        
+        # 本社オフィスの余剰スペース（事業部が利用可能）
+        available_corp_office = max(0, caps_limit['office'] - total_corp_staff)
         
         caps['facilities']['office']['usage'] = total_corp_staff
         caps['facilities']['office']['efficiency'] = corp_efficiency
@@ -187,8 +191,10 @@ class Simulation:
             # 事業部オフィス (営業・開発)
             div_office_staff = (len(d_staff[gb.DEPT_SALES]) + len(d_staff[gb.DEPT_DEV])) * gb.NPC_SCALE_FACTOR
             div_office_eff = 1.0
-            if div_office_staff > d_limit['office'] and div_office_staff > 0:
-                div_office_eff = d_limit['office'] / div_office_staff
+            # 事業部オフィス + 本社オフィスの余剰分 を利用可能とする
+            effective_office_limit = d_limit['office'] + available_corp_office
+            if div_office_staff > effective_office_limit and div_office_staff > 0:
+                div_office_eff = effective_office_limit / div_office_staff
 
             # 施設稼働状況の記録 (事業部)
             caps['facilities'][f'factory_{div_id}'] = {
@@ -347,7 +353,7 @@ class Simulation:
         # process_hr のロジック: required = 50 * (scaled_count / 7.0)
         total_employees = len(employees)
         total_employees_scaled = total_employees * gb.NPC_SCALE_FACTOR
-        req_hr = 50 * (total_employees_scaled / 7.0)
+        req_hr = 50 * (total_employees_scaled / gb.HR_CAPACITY_PER_PERSON)
         caps['requirements']['hr'] = int(req_hr)
         # HRのペナルティは process_hr で忠誠度低下として適用されるため、ここでは能力値を下げない
 
@@ -396,11 +402,15 @@ class Simulation:
         # 意思決定で共通して利用する市場データを取得
         economic_index = db.fetch_one("SELECT economic_index FROM game_state")['economic_index']
 
-        # 直近4週間のB2B販売実績 (全社)
+        # 直近4週間のB2B販売実績 (全社) - 最高売上週を参照
         market_b2b_sales_history = db.fetch_all("""
-            SELECT seller_id, design_id, SUM(quantity) as total
-            FROM transactions
-            WHERE week >= ? AND type = 'b2b'
+            SELECT seller_id, design_id, MAX(weekly_total) as max_weekly
+            FROM (
+                SELECT seller_id, design_id, week, SUM(quantity) as weekly_total
+                FROM transactions
+                WHERE week >= ? AND type = 'b2b'
+                GROUP BY seller_id, design_id, week
+            )
             GROUP BY seller_id, design_id
         """, (current_week - 4,))
 
@@ -440,7 +450,7 @@ class Simulation:
         # 市場のメーカー在庫 (小売の仕入れ判断用)
         # 修正: 在庫の所有者(i.company_id)がメーカーまたはプレイヤーであるものを対象とする
         maker_stocks = db.fetch_all("""
-            SELECT i.quantity, i.design_id, d.sales_price, d.base_price, d.concept_score, d.category_key, i.company_id as maker_id, c.brand_power
+            SELECT i.quantity, i.design_id, d.sales_price, d.base_price, d.concept_score, d.industry_key, i.company_id as maker_id, c.brand_power
             FROM inventory i
             JOIN product_designs d ON i.design_id = d.id
             JOIN companies c ON i.company_id = c.id
@@ -449,6 +459,9 @@ class Simulation:
 
         # --- NPC意思決定ループ ---
         npc_companies = [c for c in all_companies if c['type'].startswith('npc_')]
+        
+        # ボトルネック分析用の一時キャッシュ
+        bottleneck_cache = {}
 
         for comp in npc_companies:
             company_employees = npcs_by_company.get(comp['id'], [])
@@ -460,13 +473,31 @@ class Simulation:
             # フェーズ更新とリストラ判断 (最初に行う) - 経営状態の確認
             logic.update_phase(current_week)
             logic.decide_restructuring(current_week)
-
-            # 各メソッドに事前取得したデータを渡す
             logic.decide_financing(current_week)
-            logic.decide_hiring(current_week, candidates_pool=candidates_pool)
+            logic.decide_stock_action(current_week) # 資本政策
+
+            # --- 計画フェーズ ---
+            logic.decide_weekly_targets(
+                current_week,
+                designs=company_designs,
+                inventory=company_inventory,
+                b2b_sales_history=market_b2b_sales_history,
+                market_total_sales_4w=market_total_sales_4w,
+                economic_index=economic_index,
+                maker_stocks=maker_stocks
+            )
+
+            # --- 準備フェーズ (リソース確保) ---
+            logic.decide_facilities(current_week)
+            logic.decide_development(current_week, designs=company_designs)
+            logic.decide_advertising(current_week)
+            
+            # 人事 (目標キャパシティに基づいて採用)
+            logic.decide_hiring(current_week, candidates_pool=candidates_pool, all_caps=all_caps)
             logic.decide_salary(current_week)
             logic.decide_promotion(current_week)
             
+            # --- 実行フェーズ ---
             # 受注処理を先に実行 (在庫を引き当てるため)
             logic.decide_order_fulfillment(
                 current_week,
@@ -490,16 +521,19 @@ class Simulation:
                 my_inventory=company_inventory,
                 on_order=orders_for_buyer.get(comp['id'], [])
             )
-            logic.decide_development(current_week, designs=company_designs)
-            logic.decide_facilities(current_week)
-            logic.decide_advertising(current_week)
-            logic.decide_stock_action(current_week)
             logic.decide_pricing(
                 current_week,
                 designs=all_designs_res,
                 inventory=company_inventory,
                 b2b_sales_history=market_b2b_sales_history
             )
+            
+            # 分析用データをキャッシュ
+            bottleneck_cache[comp['id']] = {
+                'phase': logic.phase,
+                'plan': logic.plan
+            }
+
         print(f"[Week {current_week}] Phase 1: NPC Decisions Finished")
 
         # 2. 能力確定 (各フェーズで calculate_capabilities を呼び出して使用)
@@ -592,7 +626,9 @@ class Simulation:
             
             if cat == 'revenue':
                 comp_fin[cid]['revenue'] += amt
-            elif cat != 'cogs': # COGSは非現金支出(会計上の費用)なのでキャッシュフローとしての支出からは除外
+            # 修正: equity_finance (株式調達/自社株買い) は営業費用ではないので除外
+            # facility_sell (資産売却) も除外
+            elif cat not in ['cogs', 'equity_finance', 'facility_sell']: 
                 comp_fin[cid]['expenses'] += amt
                 
             if 'labor' in cat:
@@ -605,6 +641,90 @@ class Simulation:
             db.set_weekly_stat(current_week, cid, 'total_expenses', data['expenses'])
             db.set_weekly_stat(current_week, cid, 'labor_costs', data['labor'])
             db.set_weekly_stat(current_week, cid, 'facility_costs', data['facility'])
+
+        # --- ボトルネック分析ログの保存 ---
+        bottleneck_logs = []
+        # 週次統計を取得して実績値を参照できるようにする
+        ws_rows = db.fetch_all("SELECT * FROM weekly_stats WHERE week = ?", (current_week,))
+        ws_map = {row['company_id']: dict(row) for row in ws_rows}
+
+        for comp in npc_companies:
+            cid = comp['id']
+            cache = bottleneck_cache.get(cid)
+            if not cache: continue
+            
+            fin = comp_fin.get(cid, {'revenue': 0, 'expenses': 0})
+            profit = fin['revenue'] - fin['expenses']
+            
+            caps = all_caps.get(cid, {})
+            plan = cache['plan']
+            stats = plan.get('stats', {})
+            
+            # 施設キャパシティ (事業部)
+            cap_fac_div = 0
+            if 'facilities' in caps:
+                for k, v in caps['facilities'].items():
+                    if 'factory' in k or 'store' in k:
+                        cap_fac_div += v['usage'] # usage or limit? limit is capacity
+                        # v['limit'] が物理的なキャパシティ
+                        cap_fac_div = max(cap_fac_div, cap_fac_div - v['usage'] + v['limit']) 
+                # 簡易的に limit の合計を取り直す
+                cap_fac_div = sum(v['limit'] for k, v in caps.get('facilities', {}).items() if 'factory' in k or 'store' in k)
+
+            # 施設キャパシティ (共通)
+            cap_fac_common = caps.get('facilities', {}).get('office', {}).get('limit', 0)
+
+            # 実績値の取得
+            ws = ws_map.get(cid, {})
+            prod_count = ws.get('production_completed', 0)
+            sales_count = ws.get('b2c_sales', 0) if comp['type'] == 'npc_retail' else ws.get('b2b_sales', 0)
+
+            # 従業員数集計
+            company_employees = npcs_by_company.get(cid, [])
+            dept_counts = {d: 0 for d in gb.DEPARTMENTS}
+            for emp in company_employees:
+                if emp['department'] in dept_counts:
+                    dept_counts[emp['department']] += 1
+
+            log_entry = (
+                current_week,
+                cid,
+                comp['industry'],
+                comp['type'],
+                cache['phase'],
+                comp['funds'],
+                comp['market_cap'],
+                fin['revenue'],
+                fin['expenses'],
+                profit,
+                stats.get('current_share', 0),
+                stats.get('target_share', 0),
+                sum(plan['target_production'].values()), # target_production
+                prod_count, # production_count
+                caps.get('production_capacity', 0),
+                stats.get('target_sales', 0), # target_sales
+                sales_count, # sales_count
+                caps.get('store_throughput', caps.get('sales_capacity', 0)), # sales_capacity
+                plan['required_facility'].get('factory', 0) + plan['required_facility'].get('store', 0), # req_facility_div
+                cap_fac_div,
+                plan['required_capacity'].get('hr', 0) if 'hr' in plan['required_capacity'] else caps.get('requirements', {}).get('hr', 0), # req_hr (planになければcapsから)
+                caps.get('hr_capacity', 0),
+                plan['required_facility'].get('office', 0), # req_facility_common
+                cap_fac_common,
+                dept_counts.get(gb.DEPT_PRODUCTION, 0),
+                dept_counts.get(gb.DEPT_SALES, 0),
+                dept_counts.get(gb.DEPT_DEV, 0),
+                dept_counts.get(gb.DEPT_HR, 0),
+                dept_counts.get(gb.DEPT_PR, 0),
+                dept_counts.get(gb.DEPT_ACCOUNTING, 0),
+                dept_counts.get(gb.DEPT_STORE, 0)
+            )
+            bottleneck_logs.append(log_entry)
+
+        if bottleneck_logs:
+            placeholders = ','.join(['?'] * 31)
+            conn, _ = db.get_connection()
+            conn.executemany(f"INSERT INTO bottleneck_logs VALUES ({placeholders})", bottleneck_logs)
 
         print(f"[Week {current_week}] Simulation End")
         return new_week
@@ -712,11 +832,10 @@ class Simulation:
         # 全カテゴリの需要を計算
         categories = []
         for ind_key, ind_val in gb.INDUSTRIES.items():
-            for cat_key, cat_val in ind_val['categories'].items():
-                base = cat_val['base_demand']
-                demand = int(base * economic_index * random.uniform(0.95, 1.05))
-                categories.append({'key': cat_key, 'demand': demand})
-                db.execute_query("INSERT INTO market_trends (week, category_key, b2c_demand) VALUES (?, ?, ?)", (week, cat_key, demand))
+            base = ind_val['base_demand']
+            demand = int(base * economic_index * random.uniform(0.95, 1.05))
+            categories.append({'key': ind_key, 'demand': demand})
+            db.execute_query("INSERT INTO market_trends (week, industry_key, b2c_demand) VALUES (?, ?, ?)", (week, ind_key, demand))
         
         # 前週のB2C販売数取得 (トレンド/バンドワゴン効果用)
         prev_b2c_sales = db.fetch_all("SELECT design_id, SUM(quantity) as total FROM transactions WHERE week = ? AND type = 'b2c' GROUP BY design_id", (week - 1,))
@@ -725,7 +844,7 @@ class Simulation:
         # 小売在庫の取得
         retail_stocks = db.fetch_all("""
             SELECT i.id, i.company_id, i.division_id, i.quantity, i.sales_price as retail_price, i.design_id, d.name as product_name,
-                   d.concept_score, d.base_price, d.sales_price as msrp, d.awareness, d.material_score, d.parts_config, d.category_key,
+                   d.concept_score, d.base_price, d.sales_price as msrp, d.awareness, d.material_score, d.parts_config, d.industry_key,
                    c.brand_power as retail_brand, c.type as company_type, m.orientation as maker_orientation,
                    m.brand_power as maker_brand, m.id as creator_id
             FROM inventory i
@@ -743,7 +862,7 @@ class Simulation:
         
         # カテゴリごとに処理
         for cat in categories:
-            cat_key = cat['key']
+            ind_key = cat['key']
             market_demand = cat['demand']
             
             # 需要をセグメントに分割
@@ -751,7 +870,7 @@ class Simulation:
             demand_mass = int(market_demand * gb.MARKET_SEGMENT_MASS_RATIO)
             
             # このカテゴリの在庫のみ抽出
-            cat_stocks = [s for s in retail_stocks if s['category_key'] == cat_key]
+            cat_stocks = [s for s in retail_stocks if s['industry_key'] == ind_key]
             if not cat_stocks: continue
 
             # スコアリング
@@ -1005,7 +1124,7 @@ class Simulation:
 
             # 必要HRキャパシティ: 50 * (全従業員数(実数) / 7)
             # つまり、人事能力50の担当者1人で7人(実数)を見れる計算
-            required_capacity = 50 * ((len(employees) * gb.NPC_SCALE_FACTOR) / 7.0)
+            required_capacity = 50 * ((len(employees) * gb.NPC_SCALE_FACTOR) / gb.HR_CAPACITY_PER_PERSON)
             
             # 忠誠度変化
             loyalty_delta = 0
@@ -1257,14 +1376,15 @@ class Simulation:
             # 開発期間の取得 (カテゴリ依存)
             duration = 26 # Default fallback
             markup_modifier = 1.0 # Default
-            if proj['division_id'] and proj['category_key']:
+            cat_base_efficiency = gb.BASE_PRODUCTION_EFFICIENCY # Default
+            if proj['division_id'] and proj['industry_key']:
                 div = db.fetch_one("SELECT industry_key FROM divisions WHERE id = ?", (proj['division_id'],))
                 if div:
                     ind_key = div['industry_key']
-                    cat_key = proj['category_key']
-                    if ind_key in gb.INDUSTRIES and cat_key in gb.INDUSTRIES[ind_key]['categories']:
+                    if ind_key in gb.INDUSTRIES:
                         markup_modifier = gb.INDUSTRIES[ind_key].get('price_markup_modifier', 1.0)
-                        duration = gb.INDUSTRIES[ind_key]['categories'][cat_key]['development_duration']
+                        duration = gb.INDUSTRIES[ind_key]['development_duration']
+                        cat_base_efficiency = gb.INDUSTRIES[ind_key].get('production_efficiency_base', gb.BASE_PRODUCTION_EFFICIENCY)
 
             if week - current_start_week >= duration:
                 # 開発完了処理
@@ -1293,10 +1413,11 @@ class Simulation:
                 efficiency_luck = random.gauss(0, 0.15)
                 
                 base_concept = 3.0 * strat_mods['c_mod']
-                base_efficiency = 1.0 * strat_mods['e_mod']
+                base_efficiency = cat_base_efficiency * strat_mods['e_mod']
                 
                 final_concept = min(5.0, max(1.0, base_concept + quality_bonus + knowhow_bonus + innovation_luck))
-                final_efficiency = min(2.0, max(0.5, base_efficiency + (quality_bonus * 0.5) + efficiency_luck))
+                # 効率の上限は基準の2倍程度まで許容
+                final_efficiency = max(cat_base_efficiency * 0.5, base_efficiency + (quality_bonus * 0.5 * cat_base_efficiency) + efficiency_luck)
                 
                 # 価格決定 (原価積み上げ + 利益)
                 # 材料費係数

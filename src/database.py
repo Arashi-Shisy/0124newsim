@@ -72,7 +72,7 @@ class Database:
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             company_id INTEGER,
             name TEXT,
-            industry_key TEXT, -- 'automotive', 'home_appliances'
+            industry_key TEXT, -- 'automotive', 'pc'
             FOREIGN KEY(company_id) REFERENCES companies(id)
         )
         """)
@@ -120,7 +120,7 @@ class Database:
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             company_id INTEGER,
             division_id INTEGER,
-            category_key TEXT, -- 'sedan', 'washing_machine' etc.
+            industry_key TEXT, -- 'automotive', 'pc'
             name TEXT,
             material_score REAL,
             concept_score REAL,
@@ -318,9 +318,47 @@ class Database:
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS market_trends (
             week INTEGER,
-            category_key TEXT,
+            industry_key TEXT,
             b2c_demand INTEGER DEFAULT 0,
-            PRIMARY KEY (week, category_key)
+            PRIMARY KEY (week, industry_key)
+        )
+        """)
+
+        # ボトルネック分析用ログ
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS bottleneck_logs (
+            week INTEGER,
+            company_id INTEGER,
+            industry TEXT,
+            type TEXT,
+            phase TEXT,
+            funds INTEGER,
+            market_cap INTEGER,
+            revenue INTEGER,
+            expenses INTEGER,
+            profit INTEGER,
+            current_share REAL,
+            target_share REAL,
+            target_production INTEGER,
+            production_count INTEGER,
+            production_capacity REAL,
+            target_sales INTEGER,
+            sales_count INTEGER,
+            sales_capacity REAL,
+            req_facility_div INTEGER,
+            cap_facility_div INTEGER,
+            req_hr INTEGER,
+            cap_hr REAL,
+            req_facility_common INTEGER,
+            cap_facility_common INTEGER,
+            emp_production INTEGER,
+            emp_sales INTEGER,
+            emp_development INTEGER,
+            emp_hr INTEGER,
+            emp_pr INTEGER,
+            emp_accounting INTEGER,
+            emp_store INTEGER,
+            PRIMARY KEY (week, company_id)
         )
         """)
 

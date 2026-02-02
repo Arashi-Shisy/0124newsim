@@ -629,11 +629,10 @@ def dev_start():
     strategy = request.form.get('strategy')
     division_id = request.form.get('division_id')
     industry_key = request.form.get('industry_key')
-    category_key = request.form.get('category_key')
     
     # 選択されたカテゴリのパーツ定義を取得
     try:
-        parts_def = gb.INDUSTRIES[industry_key]['categories'][category_key]['parts']
+        parts_def = gb.INDUSTRIES[industry_key]['parts']
     except KeyError:
         flash("業界・カテゴリの選択が不正です。", "error")
         return redirect(url_for('dev'))
@@ -658,9 +657,9 @@ def dev_start():
     
     db.execute_query("""
         INSERT INTO product_designs 
-        (company_id, division_id, category_key, name, material_score, concept_score, production_efficiency, base_price, sales_price, status, strategy, developed_week, parts_config)
+        (company_id, division_id, industry_key, name, material_score, concept_score, production_efficiency, base_price, sales_price, status, strategy, developed_week, parts_config)
         VALUES (?, ?, ?, ?, ?, 0, 0, 0, 0, 'developing', ?, ?, ?)
-    """, (player['id'], division_id, category_key, name, avg_material_score, strategy, current_week, json.dumps(parts_config)))
+    """, (player['id'], division_id, industry_key, name, avg_material_score, strategy, current_week, json.dumps(parts_config)))
     
     flash(f"新製品 {name} の開発を開始しました。", "success")
     return redirect(url_for('dev'))
