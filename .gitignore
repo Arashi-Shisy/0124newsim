@@ -2,4 +2,4 @@
 simulation_events.log
 *.csv
 prompt.md
-*.db
+newsim.db

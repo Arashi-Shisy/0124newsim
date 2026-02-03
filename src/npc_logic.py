@@ -43,7 +43,8 @@ class NPCLogic:
         self.plan['stats'] = {
             'current_share': 0.0,
             'target_share': 0.0,
-            'target_sales': 0
+            'target_sales': 0,
+            'fair_share': 0.0
         }
 
     def _get_ceo_precision(self, stat_name):
@@ -573,6 +574,22 @@ class NPCLogic:
             """, (current_week - 4, my_industry))
             industry_total_sales_4w = market_stats_res['total'] if market_stats_res and market_stats_res['total'] else 0
 
+            # 会社全体のシェアを計算 (Death Spiral防止のため、全社的な立ち位置を把握)
+            my_total_sales_4w = 0
+            for design in completed_designs:
+                sales_history_item = next((s for s in b2b_sales_history if s['seller_id'] == self.company_id and s['design_id'] == design['id']), None)
+                max_weekly = sales_history_item['max_weekly'] if sales_history_item else 0
+                my_total_sales_4w += max_weekly * 4
+            
+            company_share = my_total_sales_4w / industry_total_sales_4w if industry_total_sales_4w > 0 else 1.0 / maker_count
+            fair_share = 1.0 / maker_count
+            
+            self.plan['stats']['current_share'] = company_share
+            self.plan['stats']['fair_share'] = fair_share
+            
+            # シェア挽回モード: Fair Shareの8割を下回ったらアグレッシブに動く
+            is_recovery_mode = company_share < fair_share * 0.8
+
             for design in completed_designs:
                 # 実績確認
                 sales_history_item = next((s for s in b2b_sales_history if s['seller_id'] == self.company_id and s['design_id'] == design['id']), None)
@@ -580,23 +597,26 @@ class NPCLogic:
                 estimated_4w_sales = max_weekly_sales * 4 # 最高週販ベースで4週間分を推計
                 
                 # シェア計算
-                # 修正: 業界全体の売上で割る
-                current_share = estimated_4w_sales / industry_total_sales_4w if industry_total_sales_4w > 0 else 1.0 / maker_count
+                current_design_share = estimated_4w_sales / industry_total_sales_4w if industry_total_sales_4w > 0 else 1.0 / maker_count
                 
                 # 目標シェア設定
                 brand_factor = max(0.5, min(2.0, self.company['brand_power'] / 50.0))
-                if current_share == 0:
-                    target_share = max(0.05, (1.0 / maker_count) * brand_factor)
+                if current_design_share == 0:
+                    target_share = max(0.05, fair_share * brand_factor)
                 else:
-                    growth_rate = 1.1 if self.phase == 'STABLE' else 1.3 if self.phase == 'GROWTH' else 0.95
-                    target_share = current_share * growth_rate
+                    if is_recovery_mode:
+                        # 縮小均衡回避: シェア低下時は現状維持ではなく、Fair Shareへの復帰を目指して高い目標を掲げる
+                        # 現在のシェアの1.2倍 または Fair Shareとの差分の20%埋め の大きい方
+                        recovery_target = current_design_share + (fair_share / len(completed_designs) - current_design_share) * 0.2
+                        target_share = max(current_design_share * 1.2, recovery_target)
+                    else:
+                        growth_rate = 1.1 if self.phase == 'STABLE' else 1.3 if self.phase == 'GROWTH' else 0.95
+                        target_share = current_design_share * growth_rate
                 
                 target_share = min(0.5, max(0.01, target_share))
 
-                # レポート用に最大シェアを保持 (主力製品の数値を代表値とする)
-                if current_share > self.plan['stats']['current_share']:
-                    self.plan['stats']['current_share'] = current_share
-                    self.plan['stats']['target_share'] = target_share
+                # レポート用統計データ (目標シェアは全製品の合計とする)
+                self.plan['stats']['target_share'] += target_share
                 
                 # 需要予測
                 trend_data = db.fetch_one("SELECT b2c_demand FROM market_trends WHERE industry_key = ? ORDER BY week DESC LIMIT 1", (my_industry,))
@@ -1030,8 +1050,13 @@ class NPCLogic:
         # 既存の製品数を確認
         completed_count = sum(1 for d in designs if d['status'] == 'completed' and d['division_id'] == division['id'])
         
+        # シェア低下時は新商品開発を急ぐ
+        current_share = self.plan['stats'].get('current_share', 0)
+        fair_share = self.plan['stats'].get('fair_share', 0.1)
+        is_underperforming = current_share < fair_share * 0.8
+
         # 製品が2つ未満、またはランダム（新陳代謝）で新規開発
-        if completed_count < 2 or random.random() < 0.05:
+        if completed_count < 2 or random.random() < 0.05 or (is_underperforming and random.random() < 0.2):
             # コンセプト決定 (1.0 - 5.0)
             # 企業の得意分野などがまだないのでランダム
             # コンセプトスコア等は開発完了時にStrategyに基づいて決定するため、ここでは仮置き
@@ -1308,10 +1333,17 @@ class NPCLogic:
         recent_revenue = recent_revenue_row['val'] if recent_revenue_row and recent_revenue_row['val'] else 0
         
         # 基本予算: 売上の10%。売上がない場合は手持ち資金の0.5%または200万円の小さい方（最低限の露出維持）
+        # シェア低下時は予算を増額する (対抗策)
+        current_share = self.plan['stats'].get('current_share', 0)
+        fair_share = self.plan['stats'].get('fair_share', 0.1)
+        is_underperforming = current_share < fair_share * 0.8
+        
+        base_rate = 0.20 if is_underperforming else 0.10
+        
         if recent_revenue > 0:
-            budget = min(recent_revenue * 0.10, self.company['funds'] * 0.05, 50000000)
+            budget = min(recent_revenue * base_rate, self.company['funds'] * 0.05, 100000000)
         else:
-            budget = min(self.company['funds'] * 0.005, 2000000)
+            budget = min(self.company['funds'] * 0.01, 5000000)
             
         if budget < gb.AD_COST_UNIT: return
 
@@ -1371,6 +1403,10 @@ class NPCLogic:
             aggressiveness = random.uniform(0.8, 1.2)
             random.seed() # シードリセット
 
+            current_share = self.plan['stats'].get('current_share', 0)
+            fair_share = self.plan['stats'].get('fair_share', 0.1)
+            is_underperforming = current_share < fair_share * 0.8
+
             for p in completed_designs:
                 # 現在在庫
                 stock_item = next((inv for inv in inventory if inv['design_id'] == p['id']), None)
@@ -1401,7 +1437,7 @@ class NPCLogic:
 
                 # ロジック: 在庫過多なら値下げ、品薄なら値上げ
                 # さらに市場価格との乖離も考慮する
-                if current_qty > overstock_threshold and max_weekly_sales < (5 * patience):
+                if (current_qty > overstock_threshold and max_weekly_sales < (5 * patience)) or (is_underperforming and current_qty > overstock_threshold * 0.5):
                     # 在庫過多
                     # 基準価格(base_price)が原価ではないので、parts_configから原価を計算
                     p_conf = json.loads(p['parts_config']) if p['parts_config'] else {}
