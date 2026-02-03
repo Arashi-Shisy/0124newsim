@@ -1,2 +1,5 @@
 **/__pycache__/**
 simulation_events.log
+*.csv
+prompt.md
+*.db
