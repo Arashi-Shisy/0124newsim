@@ -29,7 +29,7 @@ INDUSTRIES = {
     "automotive": {
         "name": "自動車業界",
         "price_markup_modifier": 1.0, # 標準マージン
-        "sales_efficiency_base": 2.0, # 1人あたり週2台販売
+        "sales_efficiency_base": 3.0, # 1人あたり週2台販売
         "stock_handling_coefficient": 0.1, # 在庫1台あたり0.1キャパ(営業)
         "transaction_handling_coefficient": 5.0, # 取引1台あたり20キャパ(営業)
         "development_difficulty": 1.0, # 開発難易度係数 (基準2000)

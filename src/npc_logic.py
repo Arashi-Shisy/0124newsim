@@ -289,7 +289,7 @@ class NPCLogic:
             if self.company['type'] == 'npc_retail':
                 # req_store は能力値ベース。sales_effを掛けてスループットベースに変換して比較
                 req_store_throughput = self.plan['required_capacity'].get('store', 0) * sales_eff
-                cur_store_throughput = current_caps.get('store_ops_capacity', 1)
+                cur_store_throughput = current_caps.get('store_throughput', 1)
                 if req_store_throughput > cur_store_throughput:
                     shortage_scores[gb.DEPT_STORE] = req_store_throughput / max(0.1, cur_store_throughput)
 
@@ -629,7 +629,7 @@ class NPCLogic:
                 # 効率は「1人週あたりの台数」なので、必要人数 = 台数 / 効率
                 # キャパシティ値 = 人数 * SCALE_FACTOR
                 req_man_power = needed / eff
-                self.plan['required_capacity']['production'] += req_man_power * gb.NPC_SCALE_FACTOR
+                self.plan['required_capacity']['production'] += req_man_power * 50
 
         # 2. 小売の仕入目標設定
         elif self.company['type'] == 'npc_retail':

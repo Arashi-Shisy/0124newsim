@@ -6,7 +6,7 @@ from simulation import Simulation
 from seed import run_seed
 
 # シミュレーション実行週数
-SIMULATION_WEEKS = 52
+SIMULATION_WEEKS = 13
 # 出力ファイル名
 OUTPUT_FILE = "simulation_report.csv"
 
