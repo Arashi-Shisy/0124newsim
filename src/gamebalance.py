@@ -125,7 +125,13 @@ MGMT_BONUS_CXO = 0.25
 # 開発関連
 DEV_KNOWHOW_GAIN = 0.5 # 開発完了時に得られるノウハウ
 DEV_KNOWHOW_EFFECT = 0.05 # ノウハウ1ポイントあたりのコンセプトスコアへのボーナス
-CONCEPT_DECAY_RATE = 0.999 # 週次のコンセプト陳腐化率 (1 - 0.001)
+CONCEPT_DECAY_RATE = 0.99 # 週次のコンセプト陳腐化率 (1 - 0.01)
+
+# 技術革新・新規参入
+INNOVATION_EVENT_RATE = 0.005 # 技術革新発生率 (0.5%/週)
+INNOVATION_DECAY_MULTIPLIER = 0.7 # 技術革新時の陳腐化倍率 (30%ダウン)
+NEW_ENTRY_BASE_PROB = 0.05 # 黒字時の新規参入確率
+NEW_ENTRY_FUNDS_RATIO = 0.5 # 新規参入時の資金比率 (初期設定比)
 # 追加: 開発キャパシティ要件
 # プロジェクト1つにつきキャパ2000が必要 (能力50のNPC 5人分)
 REQ_CAPACITY_DEV_PROJECT = 2000
@@ -180,6 +186,7 @@ IPO_MIN_CREDIT_RATING = 70 # 格付け70以上
 IPO_NEW_SHARE_RATIO = 0.2 # 公募増資比率 (発行済の20%)
 IPO_DISCOUNT_RATE = 0.9 # 公募価格ディスカウント (理論価格の90%)
 IPO_FEE_RATE = 0.05 # 上場手数料 (調達額の5%)
+DIVIDEND_PAYOUT_RATIO = 0.2 # 配当性向 (純利益の20%を配当)
 
 # 経理・決算
 ACCOUNTING_LOAD_PER_TRANSACTION = 0.05 # 取引1件あたりの経理負荷

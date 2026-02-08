@@ -2,22 +2,37 @@
 {% extends "base.html" %}
 
 {% block content %}
+<!-- KPI Cockpit -->
+<div class="kpi-grid">
+    <div class="kpi-card {{ 'alert' if funds < 0 else '' }}">
+        <div class="kpi-label">Cash Balance</div>
+        <div class="kpi-value">¥{{ "{:,}".format(funds|int) }}</div>
+        <div class="kpi-sub">現金残高</div>
+    </div>
+    <div class="kpi-card">
+        <div class="kpi-label">Employees</div>
+        <div class="kpi-value">{{ emp_count }} <span style="font-size: 0.6em;">名</span></div>
+        <div class="kpi-sub">平均忠誠度: {{ avg_loyalty|int }}</div>
+    </div>
+    <div class="kpi-card">
+        <div class="kpi-label">Inventory</div>
+        <div class="kpi-value">{{ "{:,}".format(total_inventory) }} <span style="font-size: 0.6em;">台</span></div>
+        <div class="kpi-sub">総在庫数</div>
+    </div>
+    <div class="kpi-card {{ 'alert' if pending_orders > 0 else 'success' }}">
+        <div class="kpi-label">B2B Orders</div>
+        <div class="kpi-value">{{ pending_orders }} <span style="font-size: 0.6em;">件</span></div>
+        <div class="kpi-sub">未承認の注文</div>
+    </div>
+</div>
+
 <div class="dashboard-grid">
     <!-- 経営情報サマリ -->
     <div class="card card-large">
         <div class="card-header">
-            <h2>自分の企業の経営情報サマリ・アラート</h2>
+            <h2>経営アラート・通知</h2>
         </div>
         <div class="card-body">
-            <div class="stat-row">
-                <span class="label">現金残高</span>
-                <span class="value">¥{{ "{:,}".format(funds|int) }}</span>
-            </div>
-            <div class="stat-row">
-                <span class="label">従業員数</span>
-                <span class="value">{{ emp_count }} 名</span>
-            </div>
-            
             {% if alerts %}
             <div class="alert-box">
                 {% for alert in alerts %}
@@ -42,9 +57,9 @@
         <div class="card-body">
             <ul class="news-list">
                 {% for item in news %}
-                <li class="news-item">
-                    <span class="news-date">{{ item.week | format_week }}</span>
-                    <span class="news-content">{{ item.message }}</span>
+                <li class="news-item" style="border-bottom: 1px solid rgba(255,255,255,0.05); padding: 8px 0;">
+                    <span class="news-date" style="color: var(--text-muted); font-size: 0.85em; margin-right: 10px;">{{ item.week | format_week }}</span>
+                    <span class="news-content" style="font-size: 0.95em;">{{ item.message }}</span>
                 </li>
                 {% else %}
                 <li class="news-item">ニュースはありません。</li>
@@ -62,29 +77,16 @@
             <h2>世界情勢サマリ</h2>
         </div>
         <div class="card-body">
-            <p>景気: {{ economic_status }}</p>
+            <div class="stat-row">
+                <span class="label">景気動向</span>
+                <span class="value">{{ economic_status }}</span>
+            </div>
+            <div class="stat-row">
+                <span class="label">失業率</span>
+                <span class="value">{{ "%.1f"|format(unemployment_rate) }}%</span>
+            </div>
             <div class="card-footer">
                 <a href="{{ url_for('world') }}" class="link-text">世界画面へ</a>
-            </div>
-        </div>
-    </div>
-
-    <!-- 人事サマリ -->
-    <div class="card">
-        <div class="card-header">
-            <h2>自分の企業の人事サマリ</h2>
-        </div>
-        <div class="card-body">
-            <div class="stat-row">
-                <span class="label">従業員数</span>
-                <span class="value">{{ emp_count }} 名</span>
-            </div>
-            <div class="stat-row">
-                <span class="label">平均忠誠度</span>
-                <span class="value">{{ avg_loyalty|int }}</span>
-            </div>
-            <div class="card-footer">
-                <a href="{{ url_for('hr') }}" class="link-text">人事画面へ</a>
             </div>
         </div>
     </div>
@@ -92,10 +94,13 @@
     <!-- 生産サマリ -->
     <div class="card">
         <div class="card-header">
-            <h2>自分の企業の生産サマリ</h2>
+            <h2>生産状況</h2>
         </div>
         <div class="card-body">
-            <p>今週の生産指示数: {{ production_this_week }} 台</p>
+            <div class="stat-row">
+                <span class="label">今週の生産指示</span>
+                <span class="value">{{ production_this_week }} 台</span>
+            </div>
             <div class="card-footer">
                 <a href="{{ url_for('production') }}" class="link-text">生産画面へ</a>
             </div>
@@ -108,45 +113,17 @@
             <h2>在庫サマリ</h2>
         </div>
         <div class="card-body">
-            <p>総在庫数: {{ "{:,}".format(total_inventory) }} 台</p>
-            
             <ul class="news-list" style="margin-top: 10px;">
                 {% for item in inventory_details %}
-                <li class="news-item" style="justify-content: space-between;">
-                    <span>{{ item.product_name }}</span>
-                    <span>{{ "{:,}".format(item.quantity) }}</span>
+                <li class="news-item" style="display: flex; justify-content: space-between; font-size: 0.9em; margin-bottom: 4px;">
+                    <span style="color: var(--text-muted);">{{ item.product_name }}</span>
+                    <span style="font-weight: bold;">{{ "{:,}".format(item.quantity) }}</span>
                 </li>
                 {% endfor %}
             </ul>
 
             <div class="card-footer">
                 <a href="{{ url_for('production') }}" class="link-text">生産画面へ</a>
-            </div>
-        </div>
-    </div>
-
-    <!-- 労働市場サマリ -->
-    <div class="card">
-        <div class="card-header">
-            <h2>労働市場サマリ</h2>
-        </div>
-        <div class="card-body">
-            <p>失業率: {{ "%.1f"|format(unemployment_rate) }}%</p>
-            <div class="card-footer">
-                <a href="{{ url_for('hire_page') }}" class="link-text">採用画面へ</a>
-            </div>
-        </div>
-    </div>
-    
-    <!-- B2B取引サマリ -->
-    <div class="card">
-        <div class="card-header">
-            <h2>B2B取引サマリ</h2>
-        </div>
-        <div class="card-body">
-            <p>未承認の注文: {{ pending_orders }} 件</p>
-            <div class="card-footer">
-                <a href="{{ url_for('sales') }}" class="link-text">営業画面へ</a>
             </div>
         </div>
     </div>
@@ -158,9 +135,12 @@
         </div>
         <div class="card-body">
             {% if developing_project %}
-            <p>進行中: {{ developing_project.name }}</p>
+            <div class="stat-row">
+                <span class="label">進行中</span>
+                <span class="value" style="color: #4db8ff;">{{ developing_project.name }}</span>
+            </div>
             {% else %}
-            <p>進行中のプロジェクトはありません。</p>
+            <p class="text-muted">進行中のプロジェクトなし</p>
             {% endif %}
             <div class="card-footer">
                 <a href="{{ url_for('dev') }}" class="link-text">開発画面へ</a>

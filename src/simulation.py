@@ -561,6 +561,9 @@ class Simulation:
         # 6. 加齢・引退処理
         self.process_aging(current_week)
 
+        # 6.5 労働市場補充 (失業率調整)
+        self.process_labor_market_replenishment(current_week)
+
         # 6. 広告効果減衰
         self.process_advertising(current_week, all_caps)
 
@@ -575,6 +578,10 @@ class Simulation:
         # 8. 倒産判定
         self.check_bankruptcy(current_week)
         print(f"[Week {current_week}] Phase 8: Bankruptcy Check Finished")
+        
+        # 8.5 新規参入判定
+        self.process_new_entries(current_week)
+        print(f"[Week {current_week}] Phase 8.5: New Entries Check Finished")
         
         # 9. 株式市場・決算処理
         self.process_stock_market(current_week, all_caps)
@@ -1277,6 +1284,44 @@ class Simulation:
                     values = tuple(new_npc.values())
                     db.execute_query(f"INSERT INTO npcs ({columns}) VALUES ({placeholders})", values)
 
+    def process_labor_market_replenishment(self, week):
+        """
+        労働市場の調整: 失業率が5%を切ったら、10%になるまで補充する
+        """
+        # 現在の人口統計
+        total_res = db.fetch_one("SELECT COUNT(*) as cnt FROM npcs")
+        total_npcs = total_res['cnt'] if total_res else 0
+        
+        unemployed_res = db.fetch_one("SELECT COUNT(*) as cnt FROM npcs WHERE company_id IS NULL")
+        unemployed_npcs = unemployed_res['cnt'] if unemployed_res else 0
+        
+        if total_npcs == 0: return
+
+        unemployment_rate = unemployed_npcs / total_npcs
+        
+        if unemployment_rate < 0.05:
+            # 目標: 失業率10%
+            # (U + X) / (T + X) = 0.10 => X = (0.1T - U) / 0.9
+            needed = int((0.1 * total_npcs - unemployed_npcs) / 0.9)
+            
+            if needed > 0:
+                new_npcs = []
+                for _ in range(needed):
+                    # 若手中心 (22-30歳)
+                    age = random.randint(22, 30)
+                    new_npcs.append(generate_random_npc(age=age))
+                
+                if new_npcs:
+                    keys = list(new_npcs[0].keys())
+                    columns = ', '.join(keys)
+                    placeholders = ', '.join(['?'] * len(keys))
+                    values_list = [tuple(npc[k] for k in keys) for npc in new_npcs]
+                    
+                    with db.transaction() as conn:
+                        conn.executemany(f"INSERT INTO npcs ({columns}) VALUES ({placeholders})", values_list)
+                
+                self.log_news(week, 0, f"労働市場に {needed} 人の新規求職者が流入しました (失業率調整)", 'market')
+
     def process_financials(self, week, all_caps=None):
         # 施設賃料支払い
         facilities = db.fetch_all("SELECT * FROM facilities WHERE is_owned = 0")
@@ -1455,7 +1500,15 @@ class Simulation:
         """
         既存製品の陳腐化: 毎週少しずつコンセプトスコアを減衰させる
         """
+        # 通常減衰
         db.execute_query(f"UPDATE product_designs SET concept_score = concept_score * {gb.CONCEPT_DECAY_RATE} WHERE status = 'completed' AND concept_score > 1.0")
+        
+        # 技術革新イベント (イノベーション)
+        for ind_key, ind_val in gb.INDUSTRIES.items():
+            if random.random() < gb.INNOVATION_EVENT_RATE:
+                # 該当業界の全製品のスコアを大幅に下げる
+                db.execute_query(f"UPDATE product_designs SET concept_score = concept_score * {gb.INNOVATION_DECAY_MULTIPLIER} WHERE status = 'completed' AND industry_key = ?", (ind_key,))
+                self.log_news(week, 0, f"【技術革新】{ind_val['name']}でブレイクスルー発生！既存製品の陳腐化が進みます。", 'market')
 
     def process_banking(self, week):
         """
@@ -1528,17 +1581,58 @@ class Simulation:
                         old_type = comp['type']
                         db.execute_query("UPDATE companies SET is_active = 0 WHERE id = ?", (comp['id'],))
                         
-                        # 4. 新企業の設立
-                        new_name = name_generator.generate_company_name(old_type)
-                        initial_funds = gb.INITIAL_FUNDS_MAKER if old_type == 'npc_maker' else gb.INITIAL_FUNDS_RETAIL
-                        
-                        new_id = db.execute_query("INSERT INTO companies (name, type, funds) VALUES (?, ?, ?)", (new_name, old_type, initial_funds))
-                        
-                        # 5. CEOの就任 (労働市場から役員適正の高い人材を抜擢)
-                        candidate = db.fetch_one("SELECT id FROM npcs WHERE company_id IS NULL ORDER BY executive DESC LIMIT 1")
-                        if candidate:
-                            db.execute_query("UPDATE npcs SET company_id = ?, role = ?, department = ? WHERE id = ?", 
-                                             (new_id, gb.ROLE_CEO, gb.DEPT_HR, candidate['id'])) # CEOは一旦HR所属扱いにしておく
+                        # 即座の復活(ゾンビ企業)は廃止し、process_new_entriesに委ねる
+
+    def process_new_entries(self, week):
+        """
+        新規参入処理: 利益が出ている市場、または過疎市場に新企業が参入する
+        """
+        target_types = ['npc_maker', 'npc_retail']
+        
+        for ind_key in gb.INDUSTRIES.keys():
+            for c_type in target_types:
+                # アクティブ企業数確認
+                count = db.fetch_one("SELECT COUNT(*) as cnt FROM companies WHERE type = ? AND industry = ? AND is_active = 1", (c_type, ind_key))['cnt']
+                
+                # 参入確率決定
+                prob = 0.0
+                
+                # 1. 過疎救済 (2社未満なら強制参入)
+                if count < 2:
+                    prob = 1.0
+                else:
+                    # 2. 利益機会による参入 (前週の平均利益が黒字ならチャンス)
+                    # weekly_statsから集計 (total_revenue - total_expenses)
+                    stats = db.fetch_one("""
+                        SELECT AVG(total_revenue - total_expenses) as avg_profit 
+                        FROM weekly_stats w 
+                        JOIN companies c ON w.company_id = c.id
+                        WHERE w.week = ? AND c.type = ? AND c.industry = ?
+                    """, (week - 1, c_type, ind_key))
+                    
+                    if stats and stats['avg_profit'] and stats['avg_profit'] > 0:
+                        prob = gb.NEW_ENTRY_BASE_PROB
+                
+                if random.random() < prob:
+                    # 新規設立
+                    new_name = name_generator.generate_company_name(c_type)
+                    base_funds = gb.INITIAL_FUNDS_MAKER if c_type == 'npc_maker' else gb.INITIAL_FUNDS_RETAIL
+                    initial_funds = int(base_funds * gb.NEW_ENTRY_FUNDS_RATIO) # 小規模スタート
+                    
+                    new_id = db.execute_query("INSERT INTO companies (name, type, funds, industry, is_active) VALUES (?, ?, ?, ?, 1)", 
+                                              (new_name, c_type, initial_funds, ind_key))
+                    
+                    # CEO就任
+                    candidate = db.fetch_one("SELECT id FROM npcs WHERE company_id IS NULL ORDER BY executive DESC LIMIT 1")
+                    if candidate:
+                        db.execute_query("UPDATE npcs SET company_id = ?, role = ?, department = ? WHERE id = ?", 
+                                         (new_id, gb.ROLE_CEO, gb.DEPT_HR, candidate['id']))
+                    
+                    # 事業部作成
+                    div_name = "製造事業部" if c_type == 'npc_maker' else "販売事業部"
+                    db.execute_query("INSERT INTO divisions (company_id, name, industry_key) VALUES (?, ?, ?)", (new_id, div_name, ind_key))
+                    
+                    self.log_news(week, new_id, f"新興企業 {new_name} が{gb.INDUSTRIES[ind_key]['name']}業界に参入しました！", 'market')
 
     def check_ipo_eligibility(self, company_id):
         """IPO条件を満たしているかチェック"""
@@ -1749,8 +1843,19 @@ class Simulation:
                 bps = max(1, net_assets / shares)
                 
                 # PER, PBR基準
-                target_per = gb.PER_BASE
-                target_pbr = gb.PBR_BASE + (comp_dict['brand_power'] / 100.0) # ブランドプレミアム
+                # 要件反映: 景気動向と信用格付けを反映
+                economic_index = db.fetch_one("SELECT economic_index FROM game_state")['economic_index']
+                
+                # 景気動向によるPER補正 (好況時は許容度が上がり、不況時は下がる)
+                # index 1.0 -> 1.0, 1.2 -> 1.4 (+40%), 0.8 -> 0.6 (-40%)
+                sentiment_multiplier = 1.0 + (economic_index - 1.0) * 2.0
+                
+                # 信用格付けによるディスカウント率補正 (格付けが高いほど株価は高くなる＝PER/PBRが高くなる)
+                # 50 -> 1.0, 100 -> 1.25, 0 -> 0.75
+                rating_multiplier = 0.75 + (comp_dict['credit_rating'] / 200.0)
+
+                target_per = gb.PER_BASE * sentiment_multiplier * rating_multiplier
+                target_pbr = (gb.PBR_BASE + (comp_dict['brand_power'] / 100.0)) * rating_multiplier
                 
                 # 理論株価
                 if eps > 0:

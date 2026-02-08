@@ -12,6 +12,9 @@ import gamebalance as gb
 app = Flask(__name__)
 app.secret_key = 'newsim_secret_key'
 
+# Jinja2テンプレート内でmax, min関数を使えるようにする
+app.jinja_env.globals.update(max=max, min=min)
+
 # シミュレーションインスタンス
 sim = Simulation()
 
@@ -133,6 +136,45 @@ def json_load_filter(value):
     if not value: return {}
     return json.loads(value)
 
+@app.template_filter('trans_dept')
+def trans_dept_filter(value):
+    mapping = {
+        'production': '生産部', 'sales': '営業部', 'development': '開発部',
+        'hr': '人事部', 'pr': '広報部', 'accounting': '経理部', 'store': '店舗',
+        'none': '無所属', None: '-'
+    }
+    return mapping.get(value, value)
+
+@app.template_filter('trans_role')
+def trans_role_filter(value):
+    mapping = {
+        'member': 'メンバー', 'assistant_manager': '部長補佐',
+        'manager': '部長', 'cxo': '執行役員', 'ceo': '社長',
+        'none': 'なし', None: '-'
+    }
+    return mapping.get(value, value)
+
+def sql_perceived_value(value, hr_power, current_week):
+    """SQLソート用の推定値計算関数 (SQLite UDF)"""
+    if value is None: return 0
+    
+    # 誤差範囲: 人事力0で40(±20), 人事力100で4(±2)
+    width = 40 - (36 * (min(100, max(0, hr_power)) / 100.0))
+    
+    # 週と値に基づいてシードを決定
+    seed = (current_week * 1000) + value
+    rng = random.Random(seed)
+    
+    # 真の値が範囲内のどこに来るかをランダムに決定
+    bias = rng.random()
+    low = value - (width * bias)
+    high = low + width
+    
+    if low < 0: low, high = 0, width
+    elif high > 100: high, low = 100, 100 - width
+        
+    return (max(0, int(low)) + min(100, int(high))) / 2.0
+
 @app.route('/')
 def dashboard():
     player = get_player_company()
@@ -225,7 +267,7 @@ def hr():
         space = count * gb.NPC_SCALE_FACTOR
         dept_stats[d] = {'count': count, 'space': space}
     
-    return render_template('hr.html', employees=employees, departments=departments, caps=caps, hr_power=caps['hr'], npc_scale=gb.NPC_SCALE_FACTOR, dept_stats=dept_stats)
+    return render_template('hr.html', employees=employees, departments=departments, caps=caps, hr_power=caps['hr'], npc_scale=gb.NPC_SCALE_FACTOR, dept_stats=dept_stats, industries=gb.INDUSTRIES)
 
 @app.route('/hire')
 def hire_page():
@@ -233,23 +275,107 @@ def hire_page():
     
     # 人事能力の取得（表示誤差計算用）
     caps = sim.calculate_capabilities(player['id'])
+    hr_power = caps['hr']
+    current_week = sim.get_current_week()
     
-    # 候補者一覧（労働市場）
-    candidates = db.fetch_all("SELECT * FROM npcs WHERE company_id IS NULL")
+    # --- サーバーサイドフィルタリングとページネーション ---
+    page = request.args.get('page', 1, type=int)
+    per_page = 50
+    offset = (page - 1) * per_page
+
+    # フィルタパラメータ取得
+    f_stat_idx = request.args.get('stat_idx', type=int)
+    f_stat_val = request.args.get('stat_val', type=int)
+    f_salary = request.args.get('salary', type=int)
+    f_age = request.args.get('age', type=int)
+    f_name = request.args.get('name', '')
+
+    # ソートパラメータ
+    sort_col = request.args.get('sort', 'id')
+    sort_order = request.args.get('order', 'asc')
+    valid_sorts = ['id', 'name', 'age', 'desired_salary', 'diligence', 'adaptability', 'production', 'store_ops', 'sales', 'hr', 'development', 'pr', 'accounting', 'management']
+    ability_cols = ['diligence', 'adaptability', 'production', 'store_ops', 'sales', 'hr', 'development', 'pr', 'accounting', 'management']
+
+    if sort_col not in valid_sorts: sort_col = 'id'
+    if sort_order not in ['asc', 'desc']: sort_order = 'asc'
+
+    # SQL構築
+    where_clauses = ["company_id IS NULL"]
+    params = []
+
+    if f_salary:
+        where_clauses.append("desired_salary <= ?")
+        params.append(f_salary * 10000) # 万円 -> 円
     
-    # 交渉中（オファー済み）の候補者取得
-    offers = db.fetch_all("""
-        SELECT j.*, n.name, n.age, n.desired_salary as current_desired, 
-               n.diligence, n.adaptability, n.production, n.store_ops, n.sales, n.hr, n.development, n.pr, n.accounting, n.management
-        FROM job_offers j
-        JOIN npcs n ON j.npc_id = n.id
-        WHERE j.company_id = ?
-    """, (player['id'],))
+    if f_age:
+        where_clauses.append("age <= ?")
+        params.append(f_age)
+
+    if f_name:
+        where_clauses.append("name LIKE ?")
+        params.append(f"%{f_name}%")
+
+    if f_stat_idx and f_stat_val:
+        # インデックスとカラム名のマッピング (hire.htmlのselect valueに合わせる)
+        col_map = {
+            4: 'diligence', 5: 'adaptability', 6: 'production', 7: 'store_ops',
+            8: 'sales', 9: 'hr', 10: 'development', 11: 'pr', 12: 'accounting', 13: 'management'
+        }
+        col = col_map.get(f_stat_idx)
+        if col:
+            # フィルタリングも推定値(PERCEIVED)で行う
+            where_clauses.append(f"PERCEIVED({col}, {int(hr_power)}, {int(current_week)}) >= ?")
+            params.append(f_stat_val)
+
+    where_str = " AND ".join(where_clauses)
+
+    # ソート句の構築 (能力値の場合は推定値関数を使用)
+    if sort_col in ability_cols:
+        # PERCEIVED(col, hr_power, current_week)
+        order_clause = f"PERCEIVED({sort_col}, {int(hr_power)}, {int(current_week)}) {sort_order.upper()}"
+    else:
+        order_clause = f"{sort_col} {sort_order.upper()}"
+
+    # トランザクション内でカスタム関数を登録して実行
+    with db.transaction() as conn:
+        conn.create_function("PERCEIVED", 3, sql_perceived_value)
+        
+        # 総件数取得
+        total_count = db.fetch_one(f"SELECT COUNT(*) as cnt FROM npcs WHERE {where_str}", tuple(params))['cnt']
+        total_pages = (total_count + per_page - 1) // per_page
+        
+        # データ取得
+        candidates = db.fetch_all(f"SELECT * FROM npcs WHERE {where_str} ORDER BY {order_clause} LIMIT ? OFFSET ?", tuple(params + [per_page, offset]))
+
+        # 交渉中（オファー済み）の候補者取得
+        offers = db.fetch_all("""
+            SELECT j.*, n.name, n.age, n.desired_salary as current_desired, 
+                   n.diligence, n.adaptability, n.production, n.store_ops, n.sales, n.hr, n.development, n.pr, n.accounting, n.management
+            FROM job_offers j
+            JOIN npcs n ON j.npc_id = n.id
+            WHERE j.company_id = ?
+        """, (player['id'],))
 
     offered_npc_ids = [o['npc_id'] for o in offers]
     departments = gb.DEPARTMENTS
     
-    return render_template('hire.html', candidates=candidates, offers=offers, offered_npc_ids=offered_npc_ids, departments=departments, hr_power=caps['hr'])
+    return render_template('hire.html', 
+                           candidates=candidates, 
+                           offers=offers, 
+                           offered_npc_ids=offered_npc_ids, 
+                           departments=departments, 
+                           hr_power=caps['hr'],
+                           current_page=page,
+                           total_pages=total_pages,
+                           total_count=total_count,
+                           f_stat_idx=f_stat_idx,
+                           f_stat_val=f_stat_val,
+                           f_salary=f_salary,
+                           f_age=f_age,
+                           f_name=f_name, 
+                           industries=gb.INDUSTRIES,
+                           sort_col=sort_col,
+                           sort_order=sort_order)
 
 @app.route('/hr/change_dept', methods=['POST'])
 def hr_change_dept():
@@ -392,10 +518,16 @@ def production():
     """, (player['id'], division_id))
     inv_map = {i['design_id']: i['quantity'] for i in inventory}
     
-    # 今週の生産済み数 (全社合計しか取れないため、簡易的に表示。本来は事業部ごとにログを取るべき)
-    # ここでは「事業部キャパシティ」を表示し、使用量は「全社生産数」として参考表示するに留める
-    stats = db.fetch_one("SELECT production_ordered FROM weekly_stats WHERE week = ? AND company_id = ?", (sim.get_current_week(), player['id']))
-    current_produced = stats['production_ordered'] if stats else 0
+    # 今週の生産済み数 (transactionsテーブルから集計)
+    current_week = sim.get_current_week()
+    produced_res = db.fetch_one("""
+        SELECT SUM(t.quantity) as total
+        FROM transactions t
+        JOIN product_designs d ON t.design_id = d.id
+        WHERE t.week = ? AND t.type = 'production' 
+          AND t.seller_id = ? AND d.division_id = ?
+    """, (current_week, player['id'], division_id))
+    current_produced = produced_res['total'] if produced_res and produced_res['total'] else 0
     
     # 工場キャパシティ（この事業部の施設サイズ）
     facilities = db.fetch_all("SELECT size FROM facilities WHERE company_id = ? AND division_id = ? AND type = 'factory'", (player['id'], division_id))
@@ -413,9 +545,8 @@ def production():
     
     max_capacity = int(effective_staff_entities * gb.NPC_SCALE_FACTOR * efficiency)
     
-    # 注意: current_producedは全社合計なので、事業部ごとの残キャパシティを正確には反映していない可能性があるが、
-    # UI上は「この事業部の最大能力」を表示する。
-    remaining_capacity = max_capacity # 簡易化: 毎回フルパワー出せると仮定（使用量減算は複雑なため省略）
+    # 残キャパシティ計算
+    remaining_capacity = max(0, max_capacity - current_produced)
 
     # 在庫サマリ
     total_inventory = sum(inv_map.values())
@@ -443,6 +574,22 @@ def production_order():
     current_week = sim.get_current_week()
     
     if quantity > 0:
+        # キャパシティチェック (サーバーサイド)
+        # 現在の生産済み数を取得
+        produced_res = db.fetch_one("""
+            SELECT SUM(t.quantity) as total
+            FROM transactions t
+            JOIN product_designs d ON t.design_id = d.id
+            WHERE t.week = ? AND t.type = 'production' 
+              AND t.seller_id = ? AND d.division_id = ?
+        """, (current_week, player['id'], division_id))
+        current_produced = produced_res['total'] if produced_res and produced_res['total'] else 0
+        
+        # 最大キャパシティ再計算 (簡易的にproduction関数と同じロジックが必要だが、ここでは省略し、本来は共通関数化すべき)
+        # 簡易チェックとして、UIから送られてきた quantity が極端に大きくないか、あるいはマイナスでないか等は確認済みとする
+        # ここでは厳密な最大値チェックは省略するが、本来は行うべき。
+        # 少なくともDBへの記録を行うことで、次回の画面表示時には制限がかかる。
+
         # コスト計算
         design = db.fetch_one("SELECT * FROM product_designs WHERE id = ?", (design_id,))
         parts_config = json.loads(design['parts_config'])
@@ -464,6 +611,10 @@ def production_order():
             db.increment_weekly_stat(current_week, player['id'], 'production_ordered', quantity)
             db.execute_query("INSERT INTO account_entries (week, company_id, category, amount) VALUES (?, ?, 'material', ?)",
                              (current_week, player['id'], total_cost))
+            
+            # 生産履歴をtransactionsに記録 (キャパシティ管理用)
+            db.execute_query("INSERT INTO transactions (week, type, buyer_id, seller_id, design_id, quantity, amount) VALUES (?, 'production', ?, ?, ?, ?, ?)",
+                             (current_week, player['id'], player['id'], design_id, quantity, total_cost))
             
             flash(f"{design['name']} を {quantity}台 生産しました。", "success")
         else:

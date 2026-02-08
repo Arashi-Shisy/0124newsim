@@ -9,43 +9,78 @@
 </head>
 <body>
     <div class="app-container">
-        <!-- Top Bar -->
-        <header class="top-bar">
-            <div class="logo-area tooltip-container">
+        <!-- Sidebar Navigation -->
+        <aside class="sidebar">
+            <div class="logo-area">
                 <h1>
                     {{ player.name if player else '自社名' }}
-                    {% if player %}
-                    <span style="font-size: 0.6em; color: #4db8ff; margin-left: 15px; font-weight: normal;">¥{{ "{:,}".format(player.funds|int) }}</span>
-                    {% if player.stock_price %}
-                    <span style="font-size: 0.6em; color: #b2ff59; margin-left: 10px; font-weight: normal;">株価: ¥{{ "{:,}".format(player.stock_price) }}</span>
-                    {% endif %}
-                    {% endif %}
                 </h1>
+            </div>
+            <nav class="sidebar-nav">
+                <a href="{{ url_for('dashboard') }}" class="{{ 'active' if active_page == 'dashboard' else '' }}">ダッシュボード</a>
+                <div style="margin: 10px 20px; font-size: 11px; color: #666; text-transform: uppercase;">Operations</div>
+                <a href="{{ url_for('production') }}" class="{{ 'active' if active_page == 'production' else '' }}">生産部 (Production)</a>
+                <a href="{{ url_for('store') }}" class="{{ 'active' if active_page == 'store' else '' }}">店舗運営 (Store)</a>
+                <a href="{{ url_for('sales') }}" class="{{ 'active' if active_page == 'sales' else '' }}">営業・B2B (Sales)</a>
+                <a href="{{ url_for('dev') }}" class="{{ 'active' if active_page == 'dev' else '' }}">開発部 (R&D)</a>
                 
-                {% if player and header_caps %}
-                <div class="tooltip-content">
-                    <div class="tooltip-section">
-                        <div class="tooltip-row">
-                            <span style="color: var(--text-muted);">組織安定性</span>
-                            <span style="font-weight: bold;">{{ header_caps.stability|int }}</span>
-                        </div>
+                <div style="margin: 10px 20px; font-size: 11px; color: #666; text-transform: uppercase;">Management</div>
+                <a href="{{ url_for('hr') }}" class="{{ 'active' if active_page == 'hr' else '' }}">人事部 (HR)</a>
+                <a href="{{ url_for('hire_page') }}" class="{{ 'active' if active_page == 'hire_page' else '' }}">採用 (Hiring)</a>
+                <a href="{{ url_for('finance') }}" class="{{ 'active' if active_page == 'finance' else '' }}">財務 (Finance)</a>
+                <a href="{{ url_for('ir') }}" class="{{ 'active' if active_page == 'ir' else '' }}">IR・株式 (Stock)</a>
+                <a href="{{ url_for('facility') }}" class="{{ 'active' if active_page == 'facility' else '' }}">施設管理 (Facility)</a>
+                <a href="{{ url_for('pr') }}" class="{{ 'active' if active_page == 'pr' else '' }}">広報 (PR)</a>
+                
+                <div style="margin: 10px 20px; font-size: 11px; color: #666; text-transform: uppercase;">Market</div>
+                <a href="{{ url_for('world') }}" class="{{ 'active' if active_page == 'world' else '' }}">世界情勢 (World)</a>
+            </nav>
+            <div class="sidebar-footer">
+                <div style="font-size: 11px; color: #666;">NewSim v0.1</div>
+            </div>
+        </aside>
+
+        <!-- Main Content Wrapper -->
+        <div class="content-wrapper">
+            <!-- Top Status Bar -->
+            <header class="top-header">
+                <div class="status-indicators tooltip-container">
+                    {% if player %}
+                    <div class="status-item">
+                        <span class="status-label">現金残高</span>
+                        <span class="status-value" style="color: #4db8ff;">¥{{ "{:,}".format(player.funds|int) }}</span>
                     </div>
+                    {% if player.stock_price %}
+                    <div class="status-item">
+                        <span class="status-label">株価</span>
+                        <span class="status-value" style="color: #b2ff59;">¥{{ "{:,}".format(player.stock_price) }}</span>
+                    </div>
+                    {% endif %}
                     
-                    <div class="tooltip-section">
-                        <table class="tooltip-table">
-                            <thead>
-                                <tr>
-                                    <th>部署</th>
-                                    <th style="text-align: right;">能力</th>
-                                    <th style="text-align: right;">Cap</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {% set header_stats_list = [
-                                    ('生産', 'production'),
-                                    ('開発', 'development'),
-                                    ('営業', 'sales'),
-                                    ('店舗', 'store_ops'),
+                    <!-- Tooltip for Capabilities (Moved from old header) -->
+                    {% if header_caps %}
+                    <div class="tooltip-content">
+                        <div class="tooltip-section">
+                            <div class="tooltip-row">
+                                <span style="color: var(--text-muted);">組織安定性</span>
+                                <span style="font-weight: bold;">{{ header_caps.stability|int }}</span>
+                            </div>
+                        </div>
+                        <div class="tooltip-section">
+                            <table class="tooltip-table">
+                                <thead>
+                                    <tr>
+                                        <th>部署</th>
+                                        <th style="text-align: right;">能力</th>
+                                        <th style="text-align: right;">Cap</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% set header_stats_list = [
+                                        ('生産', 'production'),
+                                        ('開発', 'development'),
+                                        ('営業', 'sales'),
+                                        ('店舗', 'store_ops'),
                                     ('人事', 'hr'),
                                     ('広報', 'pr'),
                                     ('経理', 'accounting')
@@ -77,49 +112,38 @@
                         </div>
                         {% endfor %}
                     </div>
-                </div>
-                {% endif %}
-            </div>
-            <nav class="top-nav">
-                <a href="{{ url_for('dashboard') }}" class="{{ 'active' if active_page == 'dashboard' else '' }}">ダッシュボード</a>
-                <a href="{{ url_for('production') }}" class="{{ 'active' if active_page == 'production' else '' }}">生産部</a>
-                <a href="{{ url_for('store') }}" class="{{ 'active' if active_page == 'store' else '' }}">店舗</a>
-                <a href="{{ url_for('sales') }}" class="{{ 'active' if active_page == 'sales' else '' }}">営業部</a>
-                <a href="{{ url_for('hr') }}" class="{{ 'active' if active_page == 'hr' else '' }}">人事部</a>
-                <a href="{{ url_for('hire_page') }}" class="{{ 'active' if active_page == 'hire_page' else '' }}">採用</a>
-                <a href="{{ url_for('dev') }}" class="{{ 'active' if active_page == 'dev' else '' }}">開発部</a>
-                <a href="{{ url_for('pr') }}" class="{{ 'active' if active_page == 'pr' else '' }}">広報部</a>
-                <a href="{{ url_for('facility') }}" class="{{ 'active' if active_page == 'facility' else '' }}">施設</a>
-                <a href="{{ url_for('finance') }}" class="{{ 'active' if active_page == 'finance' else '' }}">財務</a>
-                <a href="{{ url_for('ir') }}" class="{{ 'active' if active_page == 'ir' else '' }}">IR</a>
-                <a href="{{ url_for('world') }}" class="{{ 'active' if active_page == 'world' else '' }}">世界</a>
-            </nav>
-            <div class="action-area">
-                <div class="date-display">{{ date_str }}</div>
-                <form action="{{ url_for('next_week') }}" method="post">
-                    <button type="submit" class="btn-next-week">進める</button>
-                </form>
-            </div>
-        </header>
-
-        <!-- Main Content -->
-        <main class="main-content">
-            {% with messages = get_flashed_messages(with_categories=true) %}
-                {% if messages %}
-                    <div class="flash-messages">
-                        {% for category, message in messages %}
-                            <div class="flash-message {{ category }}">{{ message }}</div>
-                        {% endfor %}
                     </div>
-                {% endif %}
-            {% endwith %}
+                    {% endif %}
+                    {% endif %}
+                </div>
 
-            {% block content %}
-            <div class="placeholder-content">
-                {{ content }}
-            </div>
-            {% endblock %}
-        </main>
+                <div class="action-area">
+                    <div class="date-display">{{ date_str }}</div>
+                    <form action="{{ url_for('next_week') }}" method="post">
+                        <button type="submit" class="btn-next-week">NEXT WEEK &raquo;</button>
+                    </form>
+                </div>
+            </header>
+
+            <!-- Main Content -->
+            <main class="main-content">
+                {% with messages = get_flashed_messages(with_categories=true) %}
+                    {% if messages %}
+                        <div class="flash-messages">
+                            {% for category, message in messages %}
+                                <div class="flash-message {{ category }}">{{ message }}</div>
+                            {% endfor %}
+                        </div>
+                    {% endif %}
+                {% endwith %}
+
+                {% block content %}
+                <div class="placeholder-content">
+                    {{ content }}
+                </div>
+                {% endblock %}
+            </main>
+        </div>
     </div>
     
     <script>

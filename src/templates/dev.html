@@ -79,7 +79,7 @@
                 {% for proj in developing %}
                 <li class="news-item">
                     <span class="news-content">
-                        <strong>{{ proj.name }}</strong> - 残り {{ duration - (current_week - proj.developed_week) }} 週
+                        <strong>{{ proj.name }}</strong> - 残り {{ industries[proj.industry_key].development_duration - (current_week - proj.developed_week) }} 週
                     </span>
                 </li>
                 {% else %}

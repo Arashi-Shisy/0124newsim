@@ -114,7 +114,8 @@ class NPCLogic:
         elif not is_cash_rich and profit < -fixed_costs: # 赤字額が固定費を超える(大赤字)なら資金があっても危機
             self.phase = 'CRISIS'
         # GROWTH: 利益率5%以上 かつ 資金に余裕がある (固定費12週分以上)
-        elif profit_margin > 0.05 and funds > (fixed_costs * 12):
+        # または、豊富な資金(固定費52週分以上)がある場合は先行投資フェーズとしてGROWTHとする (スタートアップ期対策)
+        elif (profit_margin > 0.05 and funds > (fixed_costs * 12)) or funds > (fixed_costs * 52):
             self.phase = 'GROWTH'
         else:
             self.phase = 'STABLE'
@@ -985,6 +986,13 @@ class NPCLogic:
             
         # 4. 必要仕入れ数の計算 (目標 - 現在庫 - 発注残)
         needed_total = target_stock_total - current_total_stock - on_order_qty
+        
+        # ブルウィップ効果対策: 一度の発注量を週販予測の1.5倍までに制限し、在庫積み増しを平準化する
+        # これにより、メーカーへの急激な需要スパイクと、その後の反動減を防ぐ
+        max_order_qty = int(projected_sales * 1.5)
+        if needed_total > max_order_qty:
+            needed_total = max_order_qty
+            
         if needed_total <= 0: return
 
         # 5. 予算と必要数に応じて仕入れ実行
@@ -1567,3 +1575,28 @@ class NPCLogic:
                     db.execute_query("UPDATE companies SET funds = funds - ?, outstanding_shares = outstanding_shares - ? WHERE id = ?", (budget, buy_shares, self.company_id))
                     db.execute_query("INSERT INTO account_entries (week, company_id, category, amount) VALUES (?, ?, 'equity_finance', ?)", (current_week, self.company_id, -budget))
                     db.log_file_event(current_week, self.company_id, "Stock Buyback", f"Bought back {buy_shares} shares, cost {budget}")
+
+            # C. 配当 (Dividends)
+            # 四半期初め(1, 14, 27, 40週)に、前期の利益に基づいて配当を出す
+            if (current_week - 1) % 13 == 0:
+                # 直近四半期の利益を確認
+                quarter_profit = db.fetch_one("""
+                    SELECT SUM(CASE WHEN category = 'revenue' THEN amount ELSE 0 END) - 
+                           SUM(CASE WHEN category NOT IN ('revenue', 'material', 'stock_purchase', 'facility_purchase', 'facility_sell', 'equity_finance') THEN amount ELSE 0 END) as profit
+                    FROM account_entries 
+                    WHERE company_id = ? AND week >= ?
+                """, (self.company_id, current_week - 13))['profit'] or 0
+
+                # 黒字 かつ 資金に余裕がある(固定費12週分以上)
+                fixed_costs = self._calculate_weekly_fixed_costs()
+                if quarter_profit > 0 and funds > fixed_costs * 12:
+                    # 配当総額 = 利益 * 配当性向
+                    total_dividend = int(quarter_profit * gb.DIVIDEND_PAYOUT_RATIO)
+                    dps = int(total_dividend / shares) # 1株当たり配当
+                    
+                    if dps > 0:
+                        actual_payout = dps * shares
+                        db.execute_query("UPDATE companies SET funds = funds - ? WHERE id = ?", (actual_payout, self.company_id))
+                        db.execute_query("INSERT INTO account_entries (week, company_id, category, amount) VALUES (?, ?, 'equity_finance', ?)", (current_week, self.company_id, -actual_payout))
+                        db.log_file_event(current_week, self.company_id, "Dividend", f"Paid dividend: {dps} yen/share (Total: {actual_payout})")
+                        db.execute_query("INSERT INTO news_logs (week, company_id, message, type) VALUES (?, ?, ?, ?)", (current_week, self.company_id, f"1株当たり{dps}円の配当を実施しました。", 'market'))

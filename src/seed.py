@@ -34,15 +34,25 @@ def generate_random_npc(age=None):
     gender = random.choice(["M", "F"])
     name = name_generator.generate_person_name(gender)
     
-    # 年齢と能力の比例 (22歳=20, 60歳=60 程度 + ランダム)
-    base_stat = 20 + (age - 22) + random.randint(-10, 10)
-    base_stat = max(10, min(90, base_stat))
+    # 年齢と能力の比例 (年齢依存を下げ、ランダム性を高める)
+    # 22歳: 15~65程度, 60歳: 25~75程度
+    base_stat = random.randint(15, 65) + (age - 22) * 0.3
+    base_stat = max(5, min(95, base_stat))
     
     stats = {k: base_stat + random.randint(-5, 5) for k in ["diligence", "management", "adaptability", "store_ops", "production", "development", "sales", "hr", "pr", "accounting", "executive"]}
     # Clamp
     for k in stats: stats[k] = max(0, min(100, stats[k]))
     
-    aptitudes = {ind: 0.1 for ind in gb.INDUSTRIES.keys()}
+    aptitudes = {}
+    for ind_key in gb.INDUSTRIES.keys():
+        val = 0.1
+        # 年齢に応じた適性付与 (22歳以上の場合、確率で経験値を持たせる)
+        if age > 22 and random.random() < 0.3:
+            years = age - 22
+            # 1年あたり0.02~0.08程度の成長と仮定 (最大2.0)
+            growth = years * random.uniform(0.02, 0.08)
+            val = min(2.0, val + growth)
+        aptitudes[ind_key] = round(val, 2)
     
     # 給与は能力依存だが無職なので0 (採用時に決定されるが、データ上は0でよい)
     # ただし desired_salary は設定しておくとよい
@@ -76,7 +86,7 @@ def run_seed():
     EMPLOYEES_PER_DEPT = 2
     MAKER_INITIAL_STOCK = 50
     RETAIL_INITIAL_STOCK_TOTAL = 100
-    NUM_UNEMPLOYED = 15000
+    NUM_UNEMPLOYED = 5000
     VACANT_FACILITY_CAPACITY = 20000
 
     MAKER_DEPTS = [gb.DEPT_PRODUCTION, gb.DEPT_DEV, gb.DEPT_SALES, gb.DEPT_HR, gb.DEPT_PR, gb.DEPT_ACCOUNTING]
@@ -89,16 +99,24 @@ def run_seed():
     # ---------------------------------------------------------
     print("Generating Suppliers...")
     supplier_ids = {}
+    
+    supplier_tiers = [
+        {'suffix': ' (廉価)', 'score': 2.0, 'mult': 0.7},
+        {'suffix': '', 'score': 3.0, 'mult': 1.0},
+        {'suffix': ' (高級)', 'score': 4.5, 'mult': 1.4}
+    ]
+
     for ind in gb.INDUSTRIES.values():
         for part in ind['parts']:
             if part['key'] not in supplier_ids:
                 supplier_ids[part['key']] = []
-                s_name = name_generator.generate_supplier_name(part['label'])
-                sid = db.execute_query("""
-                    INSERT INTO companies (name, type, funds, trait_material_score, trait_cost_multiplier, part_category)
-                    VALUES (?, 'system_supplier', 0, 3.0, 1.0, ?)
-                """, (s_name, part['key']))
-                supplier_ids[part['key']].append(sid)
+                for tier in supplier_tiers:
+                    s_name = name_generator.generate_supplier_name(part['label']) + tier['suffix']
+                    sid = db.execute_query("""
+                        INSERT INTO companies (name, type, funds, trait_material_score, trait_cost_multiplier, part_category)
+                        VALUES (?, 'system_supplier', 0, ?, ?, ?)
+                    """, (s_name, tier['score'], tier['mult'], part['key']))
+                    supplier_ids[part['key']].append(sid)
 
     # ---------------------------------------------------------
     # 3. プレイヤー企業生成 (最低限プレイ可能な状態にする)
@@ -117,20 +135,28 @@ def run_seed():
     db.execute_query("INSERT INTO facilities (type, size, rent, is_owned, company_id, division_id, name) VALUES ('office', 50, ?, 0, ?, ?, '事業部オフィス')", (50 * gb.RENT_OFFICE, player_id, p_div_auto))
     db.execute_query("INSERT INTO facilities (type, size, rent, is_owned, company_id, division_id, name) VALUES ('factory', 20, ?, 0, ?, ?, '工場')", (20 * gb.RENT_FACTORY, player_id, p_div_auto))
 
-    for dept in MAKER_DEPTS:
-        for i in range(EMPLOYEES_PER_DEPT):
-            role = gb.ROLE_MANAGER if i == 0 else gb.ROLE_MEMBER
-            stats = {k: EMPLOYEE_STAT for k in ["diligence", "management", "adaptability", "store_ops", "production", "development", "sales", "hr", "pr", "accounting", "executive"]}
-            apts = {k: 1.0 for k in gb.INDUSTRIES.keys()}
-            gender = random.choice(["M", "F"])
-            name = name_generator.generate_person_name(gender)
-            
-            # 共通部門は事業部IDなし
-            target_div = p_div_auto if dept in [gb.DEPT_PRODUCTION, gb.DEPT_DEV, gb.DEPT_SALES] else None
-            
-            npc_data_list.append(create_npc_tuple(
-                name, 30, gender, player_id, target_div, dept, role, gb.BASE_SALARY_YEARLY, stats, apts
-            ))
+    # プレイヤー企業の商品設計書 (1枚)
+    ind_key = 'automotive'
+    ind_def = gb.INDUSTRIES[ind_key]
+    parts_config = {}
+    total_material_cost = 0
+    for part in ind_def['parts']:
+        sid = random.choice(supplier_ids[part['key']])
+        cost = int(part['base_cost'])
+        parts_config[part['key']] = {"supplier_id": sid, "score": 3.0, "cost": cost}
+        total_material_cost += cost
+    
+    base_price = int(total_material_cost * 3.0)
+    prod_name = "初期モデル"
+    
+    design_id = db.execute_query("""
+        INSERT INTO product_designs (company_id, division_id, industry_key, name, material_score, concept_score, production_efficiency, base_price, sales_price, status, developed_week, parts_config)
+        VALUES (?, ?, ?, ?, 3.0, 3.0, ?, ?, ?, 'completed', 0, ?)
+    """, (player_id, p_div_auto, ind_key, prod_name, ind_def['production_efficiency_base'], base_price, base_price, json.dumps(parts_config)))
+    
+    # 在庫 (少し持たせる)
+    db.execute_query("INSERT INTO inventory (company_id, division_id, design_id, quantity, sales_price) VALUES (?, ?, ?, ?, ?)", 
+                        (player_id, p_div_auto, design_id, 10, base_price))
 
     # ---------------------------------------------------------
     # 4. NPC企業生成
@@ -181,8 +207,8 @@ def run_seed():
             ))
 
             # 設計書と在庫
-            # 初期製品を2つ生成
-            for _ in range(2):
+            # 初期製品を1つ生成
+            for _ in range(1):
                 # パーツ構成
                 parts_config = {}
                 total_material_cost = 0

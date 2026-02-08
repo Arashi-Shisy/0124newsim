@@ -135,14 +135,14 @@
         <span style="font-weight: bold; color: var(--text-muted);">絞り込み:</span>
         <select id="emp-filter-dept" class="form-control" style="width: auto; padding: 4px; font-size: 13px;" onchange="filterEmployees()">
             <option value="">全部署</option>
-            {% for dept in departments %}<option value="{{ dept }}">{{ dept }}</option>{% endfor %}
+            {% for dept in departments %}<option value="{{ dept }}">{{ dept | trans_dept }}</option>{% endfor %}
         </select>
         <select id="emp-filter-role" class="form-control" style="width: auto; padding: 4px; font-size: 13px;" onchange="filterEmployees()">
             <option value="">全役職</option>
             <option value="member">メンバー</option>
             <option value="assistant_manager">部長補佐</option>
             <option value="manager">部長</option>
-            <option value="cxo">CxO</option>
+            <option value="cxo">執行役員</option>
         </select>
         <input type="text" id="emp-filter-name" class="form-control" style="width: 150px; padding: 4px; font-size: 13px;" placeholder="氏名検索" onkeyup="filterEmployees()">
     </div>
@@ -163,6 +163,7 @@
                     <th>忠誠度</th>
                     <th>マネジメント</th>
                     <th>役員適正</th>
+                    <th>業界適性</th>
                 </tr>
             </thead>
             <tbody>
@@ -171,9 +172,9 @@
                 {% for d in player_divisions %}{% if d.id == emp.division_id %}{% set ns.div_name = d.name %}{% endif %}{% endfor %}
                 <tr onclick="selectRow(this, '{{ emp.id }}', '{{ emp.name }}', '{{ emp.department }}', '{{ emp.role }}', '{{ emp.salary }}', '{{ emp.division_id }}')" data-dept="{{ emp.department }}" data-role="{{ emp.role }}" data-name="{{ emp.name }}">
                     <td><input type="radio" name="selected_emp" value="{{ emp.id }}"></td>
-                    <td>{{ emp.department }}</td>
+                    <td>{{ emp.department | trans_dept }}</td>
                     <td>{{ ns.div_name }}</td>
-                    <td>{{ emp.role }}</td>
+                    <td>{{ emp.role | trans_role }}</td>
                     <td><a href="{{ url_for('npc_detail', npc_id=emp.id) }}" style="color: #4db8ff; font-weight: bold;" onclick="event.stopPropagation()">{{ emp.name }}</a></td>
                     <td>{{ emp.age }}</td>
                     <td data-value="{{ emp.salary }}">¥{{ "{:,.2f}M".format(emp.salary / 1000000) }}</td>
@@ -185,6 +186,22 @@
                     </td>
                     <td data-value="{{ emp.management | perceived_value(hr_power) }}">{{ emp.management | ability_range_colored(hr_power) }}</td>
                     <td data-value="{{ emp.executive | perceived_value(hr_power) }}">{{ emp.executive | ability_range_colored(hr_power) }}</td>
+                    <td class="tooltip-container">
+                        {% set apts = emp.aptitudes | json_load %}
+                        {% set sorted_items = apts.items() | list | sort(attribute=1, reverse=True) %}
+                        {% if sorted_items %}
+                            <div style="font-size: 0.8em;">{{ industries[sorted_items[0][0]].name }}: {{ "{:.1f}".format(sorted_items[0][1]) }}</div>
+                            {% if sorted_items|length > 1 %}<div style="font-size: 0.7em; color: var(--text-muted); cursor: help;">他 {{ sorted_items|length - 1 }} 件</div>{% endif %}
+                        {% else %}-{% endif %}
+                        <div class="tooltip-content" style="width: 200px; right: 0; left: auto; top: 100%;">
+                            <div class="tooltip-section">
+                                <div style="font-weight: bold; margin-bottom: 5px; border-bottom: 1px solid var(--border-color); padding-bottom: 3px;">業界適性一覧</div>
+                                {% for k, v in sorted_items %}
+                                <div class="tooltip-row" style="display: flex; justify-content: space-between; font-size: 0.9em;"><span>{{ industries[k].name }}</span><span style="color: #4db8ff;">{{ "{:.2f}".format(v) }}</span></div>
+                                {% endfor %}
+                            </div>
+                        </div>
+                    </td>
                 </tr>
                 {% else %}
                 <tr><td colspan="9">役員はいません。</td></tr>
@@ -218,6 +235,7 @@
                     <th class="sortable" onclick="sortTable(this, 16, 'number')">経理</th>
                     <th class="sortable" onclick="sortTable(this, 17, 'number')">マネジ</th>
                     <th class="sortable" onclick="sortTable(this, 19, 'number')">役員</th>
+                    <th class="no-sort">適性</th>
                 </tr>
             </thead>
             <tbody>
@@ -226,9 +244,9 @@
                 {% for d in player_divisions %}{% if d.id == emp.division_id %}{% set ns.div_name = d.name %}{% endif %}{% endfor %}
                 <tr onclick="selectRow(this, '{{ emp.id }}', '{{ emp.name }}', '{{ emp.department }}', '{{ emp.role }}', '{{ emp.salary }}', '{{ emp.division_id }}')" data-dept="{{ emp.department }}" data-role="{{ emp.role }}" data-name="{{ emp.name }}">
                     <td><input type="radio" name="selected_emp" value="{{ emp.id }}"></td>
-                    <td>{{ emp.department }}</td>
+                    <td>{{ emp.department | trans_dept }}</td>
                     <td>{{ ns.div_name }}</td>
-                    <td>{{ emp.role }}</td>
+                    <td>{{ emp.role | trans_role }}</td>
                     <td><a href="{{ url_for('npc_detail', npc_id=emp.id) }}" style="color: #4db8ff; font-weight: bold;" onclick="event.stopPropagation()">{{ emp.name }}</a></td>
                     <td>{{ emp.age }}</td>
                     <td data-value="{{ emp.salary }}">¥{{ "{:,.2f}M".format(emp.salary / 1000000) }}</td>
@@ -249,6 +267,22 @@
                     <td data-value="{{ emp.accounting | perceived_value(hr_power) }}">{{ emp.accounting | ability_range_colored(hr_power) }}</td>
                     <td data-value="{{ emp.management | perceived_value(hr_power) }}">{{ emp.management | ability_range_colored(hr_power) }}</td>
                     <td data-value="{{ emp.executive | perceived_value(hr_power) }}">{{ emp.executive | ability_range_colored(hr_power) }}</td>
+                    <td class="tooltip-container">
+                        {% set apts = emp.aptitudes | json_load %}
+                        {% set sorted_items = apts.items() | list | sort(attribute=1, reverse=True) %}
+                        {% if sorted_items %}
+                            <div style="font-size: 0.8em;">{{ industries[sorted_items[0][0]].name }}: {{ "{:.1f}".format(sorted_items[0][1]) }}</div>
+                            {% if sorted_items|length > 1 %}<div style="font-size: 0.7em; color: var(--text-muted); cursor: help;">他 {{ sorted_items|length - 1 }} 件</div>{% endif %}
+                        {% else %}-{% endif %}
+                        <div class="tooltip-content" style="width: 200px; right: 0; left: auto; top: 100%;">
+                            <div class="tooltip-section">
+                                <div style="font-weight: bold; margin-bottom: 5px; border-bottom: 1px solid var(--border-color); padding-bottom: 3px;">業界適性一覧</div>
+                                {% for k, v in sorted_items %}
+                                <div class="tooltip-row" style="display: flex; justify-content: space-between; font-size: 0.9em;"><span>{{ industries[k].name }}</span><span style="color: #4db8ff;">{{ "{:.2f}".format(v) }}</span></div>
+                                {% endfor %}
+                            </div>
+                        </div>
+                    </td>
                 </tr>
                 {% endfor %}
             </tbody>
@@ -284,7 +318,7 @@
                     <label>変更後の配属</label>
                     <select name="new_dept" id="dept-new-dept" class="form-control">
                         {% for dept in departments %}
-                        <option value="{{ dept }}">{{ dept }}</option>
+                        <option value="{{ dept }}">{{ dept | trans_dept }}</option>
                         {% endfor %}
                     </select>
                 </div>
@@ -294,7 +328,7 @@
                         <option value="member">メンバー</option>
                         <option value="assistant_manager">部長補佐</option>
                         <option value="manager">部長</option>
-                        <option value="cxo">CxO</option>
+                        <option value="cxo">執行役員</option>
                     </select>
                 </div>
             </div>

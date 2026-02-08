@@ -2,6 +2,17 @@
 {% extends "base.html" %}
 
 {% block content %}
+{% macro sort_link(col, text) %}
+<a href="{{ url_for('hire_page', page=1, sort=col, order='desc' if sort_col == col and sort_order == 'asc' else 'asc', stat_idx=f_stat_idx, stat_val=f_stat_val, salary=f_salary, age=f_age, name=f_name) }}" style="color: inherit; text-decoration: none; display: inline-flex; align-items: center;">
+    {{ text }}
+    {% if sort_col == col %}
+        <span style="margin-left: 2px; font-size: 0.8em;">{{ '▲' if sort_order == 'asc' else '▼' }}</span>
+    {% else %}
+        <span style="margin-left: 2px; font-size: 0.8em; opacity: 0.3;">⇅</span>
+    {% endif %}
+</a>
+{% endmacro %}
+
 <div class="card" style="margin-bottom: 20px;">
     <div class="card-header">
         <h2>新規採用 (労働市場)</h2>
@@ -30,7 +41,7 @@
                         <td><a href="{{ url_for('npc_detail', npc_id=offer.npc_id) }}" style="color: #4db8ff;">{{ offer.name }}</a></td>
                         <td>{{ offer.age }}</td>
                         <td>¥{{ "{:,.2f}M".format(offer.offer_salary / 1000000) }}</td>
-                        <td>{{ offer.target_dept }}</td>
+                        <td>{{ offer.target_dept | trans_dept }}</td>
                         <td><span style="color: #4db8ff; font-weight: bold;">回答待ち</span></td>
                     </tr>
                     {% endfor %}
@@ -41,34 +52,40 @@
         {% endif %}
 
         <!-- 候補者フィルタ -->
-        <div class="filter-container" style="background: rgba(255,255,255,0.05); padding: 10px; border-radius: 4px; margin-bottom: 15px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+        <form method="GET" action="{{ url_for('hire_page') }}" class="filter-container" style="background: rgba(255,255,255,0.05); padding: 10px; border-radius: 4px; margin-bottom: 15px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
             <span style="font-weight: bold; color: var(--text-muted);">条件検索:</span>
-            <select id="cand-filter-stat" class="form-control" style="width: auto; padding: 4px; font-size: 13px;" onchange="filterCandidates()">
-                <option value="">能力値指定なし</option>
-                <option value="4">勤勉さ</option>
-                <option value="5">適応力</option>
-                <option value="6">生産力</option>
-                <option value="7">店舗運営</option>
-                <option value="8">営業力</option>
-                <option value="9">人事力</option>
-                <option value="10">開発力</option>
-                <option value="11">広報力</option>
-                <option value="12">経理力</option>
-                <option value="13">マネジメント</option>
+            <select name="stat_idx" class="form-control" style="width: auto; padding: 4px; font-size: 13px;">
+                <option value="" {% if not f_stat_idx %}selected{% endif %}>能力値指定なし</option>
+                <option value="4" {% if f_stat_idx == 4 %}selected{% endif %}>勤勉さ</option>
+                <option value="5" {% if f_stat_idx == 5 %}selected{% endif %}>適応力</option>
+                <option value="6" {% if f_stat_idx == 6 %}selected{% endif %}>生産力</option>
+                <option value="7" {% if f_stat_idx == 7 %}selected{% endif %}>店舗運営</option>
+                <option value="8" {% if f_stat_idx == 8 %}selected{% endif %}>営業力</option>
+                <option value="9" {% if f_stat_idx == 9 %}selected{% endif %}>人事力</option>
+                <option value="10" {% if f_stat_idx == 10 %}selected{% endif %}>開発力</option>
+                <option value="11" {% if f_stat_idx == 11 %}selected{% endif %}>広報力</option>
+                <option value="12" {% if f_stat_idx == 12 %}selected{% endif %}>経理力</option>
+                <option value="13" {% if f_stat_idx == 13 %}selected{% endif %}>マネジメント</option>
             </select>
-            <input type="number" id="cand-filter-stat-val" class="form-control" style="width: 70px; padding: 4px; font-size: 13px;" placeholder="以上" onkeyup="filterCandidates()" onchange="filterCandidates()">
+            <input type="number" name="stat_val" value="{{ f_stat_val if f_stat_val }}" class="form-control" style="width: 70px; padding: 4px; font-size: 13px;" placeholder="以上">
             
             <span style="color: var(--text-muted); margin-left: 5px; font-size: 0.9em;">給与上限:</span>
-            <input type="number" id="cand-filter-salary" class="form-control" style="width: 80px; padding: 4px; font-size: 13px;" placeholder="万円" step="10" onkeyup="filterCandidates()" onchange="filterCandidates()">
+            <input type="number" name="salary" value="{{ f_salary if f_salary }}" class="form-control" style="width: 80px; padding: 4px; font-size: 13px;" placeholder="万円" step="10">
             
             <span style="color: var(--text-muted); margin-left: 5px; font-size: 0.9em;">年齢上限:</span>
-            <input type="number" id="cand-filter-age" class="form-control" style="width: 60px; padding: 4px; font-size: 13px;" placeholder="歳" onkeyup="filterCandidates()" onchange="filterCandidates()">
+            <input type="number" name="age" value="{{ f_age if f_age }}" class="form-control" style="width: 60px; padding: 4px; font-size: 13px;" placeholder="歳">
             
-            <input type="text" id="cand-filter-name" class="form-control" style="width: 120px; padding: 4px; font-size: 13px; margin-left: auto;" placeholder="氏名検索" onkeyup="filterCandidates()">
-        </div>
+            <input type="text" name="name" value="{{ f_name if f_name }}" class="form-control" style="width: 120px; padding: 4px; font-size: 13px; margin-left: auto;" placeholder="氏名検索">
+            
+            <button type="submit" class="btn btn-primary btn-small" style="margin-left: 10px;">検索</button>
+            <a href="{{ url_for('hire_page') }}" class="btn btn-secondary btn-small" style="margin-left: 5px;">リセット</a>
+        </form>
 
         <div class="action-bar" style="margin-bottom: 10px; justify-content: flex-start;">
             <button class="btn btn-primary" onclick="submitBulkOffers()">選択した候補者に一括オファー</button>
+            <span style="margin-left: auto; color: var(--text-muted); font-size: 0.9em;">
+                全 {{ "{:,}".format(total_count) }} 名中 {{ candidates|length }} 名表示 (ページ {{ current_page }} / {{ total_pages }})
+            </span>
         </div>
 
         <div class="table-container">
@@ -76,25 +93,26 @@
                 <thead>
                     <tr>
                         <th class="no-sort" style="width: 30px; text-align: center;"><input type="checkbox" id="check-all" onclick="toggleAllCandidates(this)" style="cursor: pointer;"></th>
-                        <th class="sortable" onclick="sortTable(this, 1)">氏名</th>
-                        <th class="sortable" onclick="sortTable(this, 2, 'number')">年齢</th>
-                        <th class="sortable" onclick="sortTable(this, 3, 'number')">希望給与</th>
-                        <th class="sortable" onclick="sortTable(this, 4, 'number')">勤勉さ</th>
-                        <th class="sortable" onclick="sortTable(this, 5, 'number')">適応力</th>
-                        <th class="sortable" onclick="sortTable(this, 6, 'number')">生産力</th>
-                        <th class="sortable" onclick="sortTable(this, 7, 'number')">店舗</th>
-                        <th class="sortable" onclick="sortTable(this, 8, 'number')">営業</th>
-                        <th class="sortable" onclick="sortTable(this, 9, 'number')">人事</th>
-                        <th class="sortable" onclick="sortTable(this, 10, 'number')">開発</th>
-                        <th class="sortable" onclick="sortTable(this, 11, 'number')">広報</th>
-                        <th class="sortable" onclick="sortTable(this, 12, 'number')">経理</th>
-                        <th class="sortable" onclick="sortTable(this, 13, 'number')">マネジ</th>
+                        <th>{{ sort_link('name', '氏名') }}</th>
+                        <th>{{ sort_link('age', '年齢') }}</th>
+                        <th>{{ sort_link('desired_salary', '希望給与') }}</th>
+                        <th>{{ sort_link('diligence', '勤勉さ') }}</th>
+                        <th>{{ sort_link('adaptability', '適応力') }}</th>
+                        <th>{{ sort_link('production', '生産力') }}</th>
+                        <th>{{ sort_link('store_ops', '店舗') }}</th>
+                        <th>{{ sort_link('sales', '営業') }}</th>
+                        <th>{{ sort_link('hr', '人事') }}</th>
+                        <th>{{ sort_link('development', '開発') }}</th>
+                        <th>{{ sort_link('pr', '広報') }}</th>
+                        <th>{{ sort_link('accounting', '経理') }}</th>
+                        <th>{{ sort_link('management', 'マネジ') }}</th>
+                        <th class="no-sort">適性</th>
                         <th class="no-sort">操作</th>
                     </tr>
                 </thead>
                 <tbody>
                     {% for cand in candidates %}
-                    <tr data-name="{{ cand.name }}" data-salary="{{ cand.desired_salary }}">
+                    <tr>
                         <td style="text-align: center;">
                             {% if cand.id not in offered_npc_ids %}
                             <input type="checkbox" class="offer-checkbox" value="{{ cand.id }}" style="cursor: pointer;">
@@ -113,6 +131,22 @@
                         <td data-value="{{ cand.pr | perceived_value(hr_power) }}">{{ cand.pr | ability_range_colored(hr_power) }}</td>
                         <td data-value="{{ cand.accounting | perceived_value(hr_power) }}">{{ cand.accounting | ability_range_colored(hr_power) }}</td>
                         <td data-value="{{ cand.management | perceived_value(hr_power) }}">{{ cand.management | ability_range_colored(hr_power) }}</td>
+                        <td class="tooltip-container">
+                            {% set apts = cand.aptitudes | json_load %}
+                            {% set sorted_items = apts.items() | list | sort(attribute=1, reverse=True) %}
+                            {% if sorted_items %}
+                                <div style="font-size: 0.8em;">{{ industries[sorted_items[0][0]].name }}: {{ "{:.1f}".format(sorted_items[0][1]) }}</div>
+                                {% if sorted_items|length > 1 %}<div style="font-size: 0.7em; color: var(--text-muted); cursor: help;">他 {{ sorted_items|length - 1 }} 件</div>{% endif %}
+                            {% else %}-{% endif %}
+                            <div class="tooltip-content" style="width: 200px; right: 0; left: auto; top: 100%;">
+                                <div class="tooltip-section">
+                                    <div style="font-weight: bold; margin-bottom: 5px; border-bottom: 1px solid var(--border-color); padding-bottom: 3px;">業界適性一覧</div>
+                                    {% for k, v in sorted_items %}
+                                    <div class="tooltip-row" style="display: flex; justify-content: space-between; font-size: 0.9em;"><span>{{ industries[k].name }}</span><span style="color: #4db8ff;">{{ "{:.2f}".format(v) }}</span></div>
+                                    {% endfor %}
+                                </div>
+                            </div>
+                        </td>
                         <td>
                             {% if cand.id in offered_npc_ids %}
                                 <button class="btn btn-small btn-secondary" disabled style="opacity: 0.6; cursor: not-allowed;">オファー済</button>
@@ -121,7 +155,7 @@
                                     <input type="hidden" name="npc_id" value="{{ cand.id }}">
                                     <input type="hidden" name="offer_salary" value="{{ cand.desired_salary }}">
                                     <select name="target_dept" class="form-control dept-select" style="padding: 4px; width: auto; font-size: 12px;">
-                                        {% for dept in departments %}<option value="{{ dept }}">{{ dept }}</option>{% endfor %}
+                                        {% for dept in departments %}<option value="{{ dept }}">{{ dept | trans_dept }}</option>{% endfor %}
                                     </select>
                                     <button type="submit" class="btn btn-small btn-primary">オファー</button>
                                 </form>
@@ -132,6 +166,27 @@
                 </tbody>
             </table>
         </div>
+
+        <!-- ページネーション -->
+        {% if total_pages > 1 %}
+        <div class="pagination" style="margin-top: 20px; display: flex; justify-content: center; gap: 5px;">
+            {% if current_page > 1 %}
+            <a href="{{ url_for('hire_page', page=current_page-1, sort=sort_col, order=sort_order, stat_idx=f_stat_idx, stat_val=f_stat_val, salary=f_salary, age=f_age, name=f_name) }}" class="btn btn-secondary btn-small">&laquo; 前へ</a>
+            {% endif %}
+            
+            {% for p in range(max(1, current_page - 2), min(total_pages + 1, current_page + 3)) %}
+                {% if p == current_page %}
+                <span class="btn btn-primary btn-small" style="cursor: default;">{{ p }}</span>
+                {% else %}
+                <a href="{{ url_for('hire_page', page=p, sort=sort_col, order=sort_order, stat_idx=f_stat_idx, stat_val=f_stat_val, salary=f_salary, age=f_age, name=f_name) }}" class="btn btn-secondary btn-small">{{ p }}</a>
+                {% endif %}
+            {% endfor %}
+            
+            {% if current_page < total_pages %}
+            <a href="{{ url_for('hire_page', page=current_page+1, sort=sort_col, order=sort_order, stat_idx=f_stat_idx, stat_val=f_stat_val, salary=f_salary, age=f_age, name=f_name) }}" class="btn btn-secondary btn-small">次へ &raquo;</a>
+            {% endif %}
+        </div>
+        {% endif %}
     </div>
 </div>
 
@@ -170,46 +225,6 @@
             if (data.status === 'success') {
                 window.location.reload();
             }
-        });
-    }
-
-    function filterCandidates() {
-        const statIdx = document.getElementById('cand-filter-stat').value;
-        const statVal = parseFloat(document.getElementById('cand-filter-stat-val').value) || 0;
-        const salaryMax = parseFloat(document.getElementById('cand-filter-salary').value);
-        const ageMax = parseFloat(document.getElementById('cand-filter-age').value);
-        const name = document.getElementById('cand-filter-name').value.toLowerCase();
-
-        const rows = document.querySelectorAll('tbody tr');
-        rows.forEach(row => {
-            if (!row.hasAttribute('data-name')) return;
-
-            let show = true;
-            const rName = row.getAttribute('data-name').toLowerCase();
-            if (name && !rName.includes(name)) show = false;
-
-            if (show && salaryMax) {
-                const rSalary = parseFloat(row.getAttribute('data-salary'));
-                if (rSalary > salaryMax * 10000) show = false;
-            }
-
-            if (show && ageMax) {
-                const ageCell = row.children[2];
-                if (ageCell) {
-                    const age = parseFloat(ageCell.innerText);
-                    if (age > ageMax) show = false;
-                }
-            }
-
-            if (show && statIdx && statVal > 0) {
-                const cell = row.children[statIdx];
-                if (cell) {
-                    const val = parseFloat(cell.getAttribute('data-value')) || 0;
-                    if (val < statVal) show = false;
-                }
-            }
-
-            row.style.display = show ? '' : 'none';
         });
     }
 </script>
